@@ -52,7 +52,7 @@ def base_layout(height=360):
 
 @st.cache_data(show_spinner="Carregando base de dados...")
 def carregar_base():
-    df = pd.read_parquet("dados_processados/vendas_8020.parquet")
+    df = pd.read_parquet("vendas_8020.parquet")
     if 'PERIODO_LIMPO' not in df.columns and 'PERIODO' in df.columns:
         df['PERIODO_LIMPO'] = df['PERIODO'].astype(str).str.strip()
     else:
