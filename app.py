@@ -52,7 +52,7 @@ def base_layout(height=360):
 
 @st.cache_data(show_spinner="Carregando base de dados...")
 def carregar_base():
-    df = pd.read_parquet("vendas_8020.parquet")
+    df = pd.read_parquet("dados_processados/vendas_8020.parquet")
     if 'PERIODO_LIMPO' not in df.columns and 'PERIODO' in df.columns:
         df['PERIODO_LIMPO'] = df['PERIODO'].astype(str).str.strip()
     else:
@@ -168,10 +168,12 @@ with tab_clientes:
                 fmt_brl(resumo_temp.loc[m, 'Faturamento']),
                 f"{int(resumo_temp.loc[m, 'Positivacoes']):,}".replace(',', '.'),
             ]
-        st.table(pd.DataFrame(tabela_topo))
+        df_resumo_mensal = pd.DataFrame(tabela_topo)
+        st.table(df_resumo_mensal)
+        
         matrix_cli = (
             df_filtrado.pivot_table(
-                index=['CODCLI', 'CLIENTE'],
+                index=['CODCLI', 'CLIENTE', 'CODREDE', 'REDE'],
                 columns='PERIODO_LIMPO',
                 values='TVENDA',
                 aggfunc='sum'
@@ -183,14 +185,15 @@ with tab_clientes:
         ult_3 = colunas_meses[-3:] if len(colunas_meses) >= 3 else colunas_meses
         matrix_cli['Media Ult. 3 Meses'] = matrix_cli[ult_3].mean(axis=1)
         matrix_cli = matrix_cli.sort_values('Total', ascending=False).reset_index()
-        matrix_cli = matrix_cli.rename(columns={'CODCLI': 'Codigo', 'CLIENTE': 'Cliente'})
+        matrix_cli = matrix_cli.rename(columns={'CODCLI': 'Codigo', 'CLIENTE': 'Cliente', 'CODREDE': 'Cod. Rede', 'REDE': 'Rede'})
         matrix_cli['Acumulado'] = matrix_cli['Total'].cumsum()
         soma_v = matrix_cli['Total'].sum()
         matrix_cli['Pct Acumulado'] = (matrix_cli['Acumulado'] / soma_v * 100) if soma_v > 0 else 0
         matrix_cli['Curva ABC'] = matrix_cli['Pct Acumulado'].apply(
             lambda x: 'A' if x <= 80 else ('B' if x <= 95 else 'C')
         )
-        colunas_exib = ['Curva ABC', 'Codigo', 'Cliente'] + colunas_meses + ['Media Ult. 3 Meses', 'Total']
+        
+        colunas_exib = ['Curva ABC', 'Cod. Rede', 'Rede', 'Codigo', 'Cliente'] + colunas_meses + ['Media Ult. 3 Meses', 'Total']
         cols_num = colunas_meses + ['Media Ult. 3 Meses', 'Total']
         st.write("### Grade de Faturamento por Cliente e Rede")
         st.dataframe(
@@ -198,9 +201,22 @@ with tab_clientes:
             use_container_width=True,
             height=450
         )
+        
+        # Ajuste do resumo mensal para alinhar as colunas dos meses com o df principal no Excel
+        colunas_excel_resumo = ['Metrica'] + colunas_meses
+        df_resumo_excel = df_resumo_mensal[colunas_excel_resumo]
+        
+        # Inserção de colunas vazias para empurrar a coluna 'Metrica' exatamente para baixo de 'Cliente'
+        # Assim, o primeiro mês (ex: jan/26) ficará perfeitamente alinhado com o primeiro mês da grade de baixo
+        df_resumo_excel = pd.concat([
+            pd.DataFrame(columns=['Curva ABC', 'Cod. Rede', 'Rede', 'Codigo']),
+            df_resumo_excel
+        ], axis=1).fillna('')
+        
         buf = io.BytesIO()
         with pd.ExcelWriter(buf, engine='xlsxwriter') as w:
-            matrix_cli[colunas_exib].to_excel(w, index=False, sheet_name='Clientes 8020')
+            df_resumo_excel.to_excel(w, index=False, sheet_name='Clientes 8020', startrow=0)
+            matrix_cli[colunas_exib].to_excel(w, index=False, sheet_name='Clientes 8020', startrow=len(df_resumo_excel) + 3)
         st.download_button(
             "Exportar Clientes para Excel",
             data=buf.getvalue(),
