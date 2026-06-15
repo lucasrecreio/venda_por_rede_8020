@@ -16,7 +16,7 @@ st.title("Rotina 8020 - Vendas Por Cliente e Rede")
 
 ORDER_MESES = {'jan':1,'fev':2,'mar':3,'abr':4,'mai':5,'jun':6,'jul':7,'ago':8,'set':9,'out':10,'nov':11,'dez':12}
 
-def chave_cronologica(texto):
+def delete_chave_cronologica(texto):
     try:
         m, a = str(texto).split('/')
         return (int(a), ORDER_MESES.get(m.lower(), 0))
@@ -74,7 +74,7 @@ st.sidebar.header("Filtros de Selecao")
 anos_disponiveis = sorted(dados_originais['ANO_EIXO'].unique(), reverse=True)
 anos_selecionados = st.sidebar.multiselect("Ano", anos_disponiveis, default=anos_disponiveis)
 df_temp = dados_originais[dados_originais['ANO_EIXO'].isin(anos_selecionados)] if anos_selecionados else dados_originais
-todos_meses = sorted(df_temp['PERIODO_LIMPO'].unique(), key=chave_cronologica)
+todos_meses = sorted(df_temp['PERIODO_LIMPO'].unique(), key=delete_chave_cronologica)
 meses_selecionados = st.sidebar.multiselect("Meses Disponiveis", todos_meses, default=todos_meses)
 filiais_disponiveis = sorted(df_temp['CODFILIAL'].unique())
 filial_sel = st.sidebar.multiselect("Unidade / Filial", filiais_disponiveis, default=filiais_disponiveis)
@@ -82,6 +82,7 @@ redes_disponiveis = sorted(df_temp['REDE'].dropna().unique())
 rede_sel = st.sidebar.multiselect("Rede de Clientes", redes_disponiveis, default=[])
 marcas_disponiveis = sorted(df_temp['MARCA'].dropna().unique()) if 'MARCA' in df_temp.columns else []
 marca_sel = st.sidebar.multiselect("Marca do Produto", marcas_disponiveis, default=[])
+busca_cliente = st.sidebar.text_input("Buscar por Nome do Cliente")
 busca_produto = st.sidebar.text_input("Buscar por Nome do Produto")
 st.sidebar.markdown("---")
 st.sidebar.header("Entrada de Listas (Excel)")
@@ -109,8 +110,11 @@ if rede_sel:
     df_filtrado = df_filtrado[df_filtrado['REDE'].isin(rede_sel)]
 if marca_sel:
     df_filtrado = df_filtrado[df_filtrado['MARCA'].isin(marca_sel)]
+if busca_cliente:
+    df_filtrado = df_filtrado[df_filtrado['CLIENTE'].str.contains(busca_cliente, case=False, na=False)]
 if busca_produto:
     df_filtrado = df_filtrado[df_filtrado['DESCRICAO'].str.contains(busca_produto, case=False, na=False)]
+
 for campo, lista in [
     ('CODREDE', processar_lista_input(input_codrede)),
     ('CODCLI',  processar_lista_input(input_codcli)),
@@ -119,7 +123,8 @@ for campo, lista in [
     ('NCM',     processar_lista_input(input_ncm)),
 ]:
     if lista and campo in df_filtrado.columns:
-        df_filtrado = df_filtrado[df_filtrado[campo].isin(lista)]
+        # Força a conversão temporária para string para casar com os códigos do Excel
+        df_filtrado = df_filtrado[df_filtrado[campo].astype(str).str.split('.').str[0].str.strip().isin(lista)]
 
 tab_clientes, tab_produtos, tab_inteligencia = st.tabs([
     "Clientes / Rede",
@@ -134,7 +139,7 @@ with tab_clientes:
     if df_filtrado.empty:
         st.warning("Sem dados para os filtros aplicados.")
     else:
-        colunas_meses = sorted(df_filtrado['PERIODO_LIMPO'].unique(), key=chave_cronologica)
+        colunas_meses = sorted(df_filtrado['PERIODO_LIMPO'].unique(), key=delete_chave_cronologica)
         tot_fat  = df_filtrado['TVENDA'].sum()
         tot_luc  = df_filtrado['TLUCRO'].sum() if 'TLUCRO' in df_filtrado.columns else 0
         tot_pos  = df_filtrado['CODCLI'].nunique()
@@ -202,12 +207,9 @@ with tab_clientes:
             height=450
         )
         
-        # Ajuste do resumo mensal para alinhar as colunas dos meses com o df principal no Excel
         colunas_excel_resumo = ['Metrica'] + colunas_meses
         df_resumo_excel = df_resumo_mensal[colunas_excel_resumo]
         
-        # Inserção de colunas vazias para empurrar a coluna 'Metrica' exatamente para baixo de 'Cliente'
-        # Assim, o primeiro mês (ex: jan/26) ficará perfeitamente alinhado com o primeiro mês da grade de baixo
         df_resumo_excel = pd.concat([
             pd.DataFrame(columns=['Curva ABC', 'Cod. Rede', 'Rede', 'Codigo']),
             df_resumo_excel
@@ -325,7 +327,7 @@ with tab_inteligencia:
     if df_filtrado.empty:
         st.warning("Sem dados para os filtros aplicados.")
     else:
-        colunas_meses_ib = sorted(df_filtrado['PERIODO_LIMPO'].unique(), key=chave_cronologica)
+        colunas_meses_ib = sorted(df_filtrado['PERIODO_LIMPO'].unique(), key=delete_chave_cronologica)
 
         st.write("### Evolucao de Faturamento Mensal")
         serie_fat = (
@@ -443,7 +445,7 @@ with tab_inteligencia:
             marker_color='#6366f1',
             text=top10_plot['Faturamento R$'],
             textposition='outside',
-            hovertemplate='<b>%{y}</b><br>%{customdata}<extra></extra>',
+            hovertemplate='<b>%{y}</b><br>Faturamento: %{customdata}<extra></extra>',
             customdata=top10_plot['Faturamento R$'],
         ))
         layout_top10 = base_layout(400)
