@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import io
 import plotly.graph_objects as go
 
@@ -29,11 +30,43 @@ def fmt_brl(valor):
     except Exception:
         return "R$ 0"
 
+def fmt_inteiro(valor):
+    try:
+        return f"{int(valor):,}".replace(',', '.')
+    except Exception:
+        return "0"
+
 def fmt_pct(valor):
     try:
-        return f"{valor:.2f}%"
+        return f"{valor:.2f}%" if not pd.isna(valor) else "0.00%"
     except Exception:
         return "0.00%"
+
+# --- NOVAS FUNÇÕES PARA FORMATAÇÃO CONDICIONAL ---
+def fmt_var(valor):
+    """Adiciona as setas e formata percentual"""
+    try:
+        if pd.isna(valor) or valor == float('inf') or valor == float('-inf'):
+            return "-"
+        if valor > 0:
+            return f"▲ +{valor:.2f}%"
+        elif valor < 0:
+            return f"▼ {valor:.2f}%"
+        else:
+            return "➖ 0.00%"
+    except:
+        return "-"
+
+def style_var_color(val):
+    """Aplica o CSS de cor Verde/Vermelho com base no valor numérico"""
+    try:
+        if pd.isna(val): return ''
+        if val > 0: return 'color: #10b981; font-weight: bold;' # Verde
+        if val < 0: return 'color: #ef4444; font-weight: bold;' # Vermelho
+    except:
+        pass
+    return ''
+# --------------------------------------------------
 
 PLOT_BG = "#0d1117"
 PLOT_GRID = "#1a202c"
@@ -123,13 +156,13 @@ for campo, lista in [
     ('NCM',     processar_lista_input(input_ncm)),
 ]:
     if lista and campo in df_filtrado.columns:
-        # Força a conversão temporária para string para casar com os códigos do Excel
         df_filtrado = df_filtrado[df_filtrado[campo].astype(str).str.split('.').str[0].str.strip().isin(lista)]
 
-tab_clientes, tab_produtos, tab_inteligencia = st.tabs([
+tab_clientes, tab_produtos, tab_inteligencia, tab_metas = st.tabs([
     "Clientes / Rede",
     "Produtos / Marca",
-    "Inteligencia de Negocio"
+    "Inteligencia de Negocio",
+    "Simulador de Metas"
 ])
 
 # ---------------------------------------------------------------
@@ -140,87 +173,152 @@ with tab_clientes:
         st.warning("Sem dados para os filtros aplicados.")
     else:
         colunas_meses = sorted(df_filtrado['PERIODO_LIMPO'].unique(), key=delete_chave_cronologica)
+        
+        op_visao = st.radio("Métrica de Visualização Comercial (Aba Clientes)", ["Faturamento (R$)", "Volume (Caixas)"], horizontal=True)
+        col_analise = 'TVENDA' if op_visao == "Faturamento (R$)" else 'QT'
+        fmt_visao = fmt_brl if op_visao == "Faturamento (R$)" else fmt_inteiro
+
         tot_fat  = df_filtrado['TVENDA'].sum()
+        tot_vol  = df_filtrado['QT'].sum()
         tot_luc  = df_filtrado['TLUCRO'].sum() if 'TLUCRO' in df_filtrado.columns else 0
         tot_pos  = df_filtrado['CODCLI'].nunique()
         margem_g = (tot_luc / tot_fat * 100) if tot_fat > 0 else 0
+        
         delta_str = None
         if len(colunas_meses) >= 2:
             mes_atual = colunas_meses[-1]
             mes_ant   = colunas_meses[-2]
-            fat_atual = df_filtrado[df_filtrado['PERIODO_LIMPO'] == mes_atual]['TVENDA'].sum()
-            fat_ant   = df_filtrado[df_filtrado['PERIODO_LIMPO'] == mes_ant]['TVENDA'].sum()
-            if fat_ant > 0:
-                delta_val = (fat_atual - fat_ant) / fat_ant * 100
+            val_atual = df_filtrado[df_filtrado['PERIODO_LIMPO'] == mes_atual][col_analise].sum()
+            val_ant   = df_filtrado[df_filtrado['PERIODO_LIMPO'] == mes_ant][col_analise].sum()
+            if val_ant > 0:
+                delta_val = (val_atual - val_ant) / val_ant * 100
                 delta_str = f"{delta_val:+.1f}% vs {mes_ant}"
+                
         st.write("### Indicadores Consolidados do Periodo")
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Faturamento Bruto",      fmt_brl(tot_fat), delta=delta_str)
-        m2.metric("Lucro Bruto",            fmt_brl(tot_luc))
-        m3.metric("Clientes Positivados",   f"{tot_pos:,}".replace(',', '.'))
+        m1.metric(f"{op_visao} Total", fmt_visao(df_filtrado[col_analise].sum()), delta=delta_str)
+        m2.metric("Lucro Bruto", fmt_brl(tot_luc))
+        m3.metric("Clientes Positivados", f"{tot_pos:,}".replace(',', '.'))
         m4.metric("Margem de Contribuicao", fmt_pct(margem_g))
         st.markdown("---")
+        
+        # Resumo Mensal Nominal
         resumo_temp = (
             df_filtrado.groupby('PERIODO_LIMPO')
-            .agg(Faturamento=('TVENDA', 'sum'), Positivacoes=('CODCLI', 'nunique'))
+            .agg(Faturamento=('TVENDA', 'sum'), Volume=('QT', 'sum'), Positivacoes=('CODCLI', 'nunique'))
             .reindex(colunas_meses)
             .fillna(0)
         )
+        
         st.write("### Resumo de Desempenho Mensal")
-        tabela_topo = {"Metrica": ["Total Venda", "Total Positivacoes"]}
+        tabela_topo = {"Metrica": [f"Total {op_visao}", "Total Positivacoes"]}
         for m in colunas_meses:
             tabela_topo[m] = [
-                fmt_brl(resumo_temp.loc[m, 'Faturamento']),
+                fmt_visao(resumo_temp.loc[m, 'Faturamento' if col_analise == 'TVENDA' else 'Volume']),
                 f"{int(resumo_temp.loc[m, 'Positivacoes']):,}".replace(',', '.'),
             ]
         df_resumo_mensal = pd.DataFrame(tabela_topo)
-        st.table(df_resumo_mensal)
+        st.dataframe(df_resumo_mensal, use_container_width=True, hide_index=True)
         
+        # --- TABELA DE EVOLUÇÃO PERCENTUAL MOM (COM CORES) ---
+        st.write("### Análise de Evolução Mensal (% MoM)")
+        serie_valores_mensais = resumo_temp['Faturamento' if col_analise == 'TVENDA' else 'Volume']
+        variacao_mom = serie_valores_mensais.pct_change() * 100
+        
+        tabela_mom = {"Metrica": [f"Crescimento MoM (%)"]}
+        for m in colunas_meses:
+            val = variacao_mom.get(m, np.nan) if m != colunas_meses[0] else np.nan
+            tabela_mom[m] = [val]
+            
+        df_evolucao_mom = pd.DataFrame(tabela_mom)
+        
+        # Aplicando a formatação condicional Styler
+        style_mom = df_evolucao_mom.style.format({m: fmt_var for m in colunas_meses})
+        if hasattr(style_mom, "map"):
+            style_mom = style_mom.map(style_var_color, subset=colunas_meses)
+        else:
+            style_mom = style_mom.applymap(style_var_color, subset=colunas_meses)
+            
+        st.dataframe(style_mom, use_container_width=True, hide_index=True)
+        
+        # Matriz Principal baseada na Chave Selecionada
         matrix_cli = (
             df_filtrado.pivot_table(
                 index=['CODCLI', 'CLIENTE', 'CODREDE', 'REDE'],
                 columns='PERIODO_LIMPO',
-                values='TVENDA',
+                values=col_analise,
                 aggfunc='sum'
             )
             .fillna(0)
         )
         matrix_cli = matrix_cli.reindex(columns=colunas_meses, fill_value=0)
-        matrix_cli['Total'] = matrix_cli[colunas_meses].sum(axis=1)
+        matrix_cli['Histórico Total'] = matrix_cli[colunas_meses].sum(axis=1)
         ult_3 = colunas_meses[-3:] if len(colunas_meses) >= 3 else colunas_meses
         matrix_cli['Media Ult. 3 Meses'] = matrix_cli[ult_3].mean(axis=1)
-        matrix_cli = matrix_cli.sort_values('Total', ascending=False).reset_index()
+        
+        matrix_cli = matrix_cli.sort_values('Histórico Total', ascending=False).reset_index()
         matrix_cli = matrix_cli.rename(columns={'CODCLI': 'Codigo', 'CLIENTE': 'Cliente', 'CODREDE': 'Cod. Rede', 'REDE': 'Rede'})
-        matrix_cli['Acumulado'] = matrix_cli['Total'].cumsum()
-        soma_v = matrix_cli['Total'].sum()
+        
+        # --- CÁLCULO DA VARIAÇÃO DO ÚLTIMO MÊS PARA A MATRIZ ---
+        if len(colunas_meses) >= 2:
+            mes_atual = colunas_meses[-1]
+            mes_ant   = colunas_meses[-2]
+            matrix_cli['Var. Últ. Mês'] = ((matrix_cli[mes_atual] - matrix_cli[mes_ant]) / matrix_cli[mes_ant].replace(0, np.nan)) * 100
+        else:
+            matrix_cli['Var. Últ. Mês'] = np.nan
+        
+        matrix_cli['Acumulado'] = matrix_cli['Histórico Total'].cumsum()
+        soma_v = matrix_cli['Histórico Total'].sum()
         matrix_cli['Pct Acumulado'] = (matrix_cli['Acumulado'] / soma_v * 100) if soma_v > 0 else 0
         matrix_cli['Curva ABC'] = matrix_cli['Pct Acumulado'].apply(
             lambda x: 'A' if x <= 80 else ('B' if x <= 95 else 'C')
         )
         
-        colunas_exib = ['Curva ABC', 'Cod. Rede', 'Rede', 'Codigo', 'Cliente'] + colunas_meses + ['Media Ult. 3 Meses', 'Total']
-        cols_num = colunas_meses + ['Media Ult. 3 Meses', 'Total']
-        st.write("### Grade de Faturamento por Cliente e Rede")
+        colunas_exib = ['Curva ABC', 'Cod. Rede', 'Rede', 'Codigo', 'Cliente'] + colunas_meses + ['Var. Últ. Mês', 'Media Ult. 3 Meses', 'Histórico Total']
+        cols_num = colunas_meses + ['Media Ult. 3 Meses', 'Histórico Total']
+        
+        st.write("### Grade de Resultados por Cliente e Rede")
+        
+        # Formatação Condicional no Streamlit da Grid Principal
+        format_dict = {c: fmt_visao for c in cols_num}
+        format_dict['Var. Últ. Mês'] = fmt_var
+        
+        style_grid = matrix_cli[colunas_exib].style.format(format_dict)
+        if hasattr(style_grid, "map"):
+            style_grid = style_grid.map(style_var_color, subset=['Var. Últ. Mês'])
+        else:
+            style_grid = style_grid.applymap(style_var_color, subset=['Var. Últ. Mês'])
+            
         st.dataframe(
-            matrix_cli[colunas_exib].style.format({c: fmt_brl for c in cols_num}),
+            style_grid,
             use_container_width=True,
-            height=450
+            height=450,
+            hide_index=True
         )
         
+        # Alinhamento e Preparação do Excel
         colunas_excel_resumo = ['Metrica'] + colunas_meses
-        df_resumo_excel = df_resumo_mensal[colunas_excel_resumo]
+        df_resumo_excel = df_resumo_mensal[colunas_excel_resumo].copy()
+        df_mom_excel = df_evolucao_mom[colunas_excel_resumo].copy()
         
-        df_resumo_excel = pd.concat([
-            pd.DataFrame(columns=['Curva ABC', 'Cod. Rede', 'Rede', 'Codigo']),
-            df_resumo_excel
-        ], axis=1).fillna('')
+        # Garante a formatação textual no Excel
+        for m in colunas_meses:
+            df_mom_excel[m] = df_mom_excel[m].apply(fmt_var)
+        
+        matrix_cli_excel = matrix_cli[colunas_exib].copy()
+        matrix_cli_excel['Var. Últ. Mês'] = matrix_cli_excel['Var. Últ. Mês'].apply(fmt_var)
+        
+        df_resumo_excel = pd.concat([pd.DataFrame(columns=['Curva ABC', 'Cod. Rede', 'Rede', 'Codigo']), df_resumo_excel], axis=1).fillna('')
+        df_mom_excel = pd.concat([pd.DataFrame(columns=['Curva ABC', 'Cod. Rede', 'Rede', 'Codigo']), df_mom_excel], axis=1).fillna('')
         
         buf = io.BytesIO()
         with pd.ExcelWriter(buf, engine='xlsxwriter') as w:
             df_resumo_excel.to_excel(w, index=False, sheet_name='Clientes 8020', startrow=0)
-            matrix_cli[colunas_exib].to_excel(w, index=False, sheet_name='Clientes 8020', startrow=len(df_resumo_excel) + 3)
+            df_mom_excel.to_excel(w, index=False, sheet_name='Clientes 8020', startrow=len(df_resumo_excel) + 1)
+            matrix_cli_excel.to_excel(w, index=False, sheet_name='Clientes 8020', startrow=len(df_resumo_excel) + len(df_mom_excel) + 4)
+            
         st.download_button(
-            "Exportar Clientes para Excel",
+            "Exportar Análise de Clientes para Excel",
             data=buf.getvalue(),
             file_name="rotina_8020_clientes.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -280,7 +378,8 @@ with tab_produtos:
         st.dataframe(
             df_prod[base_cols].style.format(fmt_prod),
             use_container_width=True,
-            height=400
+            height=400,
+            hide_index=True
         )
 
         if 'MARCA' in df_filtrado.columns:
@@ -542,5 +641,78 @@ with tab_inteligencia:
             "Exportar Inteligencia de Negocio para Excel",
             data=buf_intel.getvalue(),
             file_name="rotina_8020_inteligencia.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+# ---------------------------------------------------------------
+# ABA 4 - SIMULADOR DE METAS
+# ---------------------------------------------------------------
+with tab_metas:
+    if df_filtrado.empty:
+        st.warning("Sem dados para os filtros aplicados. Ajuste os filtros na barra lateral.")
+    else:
+        st.write("### 🎯 Planejamento e Simulador de Metas")
+        
+        c_op1, c_op2, c_op3 = st.columns(3)
+        meta_metrica = c_op1.radio("Métrica Alvo para a Meta", ["Faturamento (R$)", "Volume (Caixas)"])
+        meta_nivel = c_op2.selectbox("Nível de Detalhamento da Meta", ["Por Cliente", "Por Rede", "Por Marca", "Por Produto"])
+        meta_pct = c_op3.number_input("% de Crescimento Desejado", min_value=-100.0, max_value=1000.0, value=10.0, step=1.0)
+        
+        fator_meta = 1 + (meta_pct / 100.0)
+        col_analise_meta = 'TVENDA' if meta_metrica == "Faturamento (R$)" else 'QT'
+        fmt_meta = fmt_brl if meta_metrica == "Faturamento (R$)" else fmt_inteiro
+        
+        if meta_nivel == "Por Cliente":
+            grp_meta = ['CODCLI', 'CLIENTE']
+            rename_meta = {'CODCLI': 'Código', 'CLIENTE': 'Cliente'}
+        elif meta_nivel == "Por Rede":
+            grp_meta = ['CODREDE', 'REDE']
+            rename_meta = {'CODREDE': 'Cód. Rede', 'REDE': 'Rede'}
+        elif meta_nivel == "Por Marca":
+            grp_meta = ['MARCA']
+            rename_meta = {'MARCA': 'Marca'}
+        else:
+            grp_meta = ['CODPROD', 'DESCRICAO']
+            rename_meta = {'CODPROD': 'Código', 'DESCRICAO': 'Produto'}
+            
+        colunas_meses_meta = sorted(df_filtrado['PERIODO_LIMPO'].unique(), key=delete_chave_cronologica)
+        
+        df_base_meta = df_filtrado.pivot_table(
+            index=grp_meta,
+            columns='PERIODO_LIMPO',
+            values=col_analise_meta,
+            aggfunc='sum'
+        ).fillna(0)
+        
+        df_base_meta = df_base_meta.reindex(columns=colunas_meses_meta, fill_value=0)
+        ult_3_meta = colunas_meses_meta[-3:] if len(colunas_meses_meta) >= 3 else colunas_meses_meta
+        df_base_meta['Média Histórica (Últimos Meses)'] = df_base_meta[ult_3_meta].mean(axis=1)
+        
+        df_base_meta['Meta Projetada (Mês)'] = df_base_meta['Média Histórica (Últimos Meses)'] * fator_meta
+        df_base_meta['Variação (Absoluta)'] = df_base_meta['Meta Projetada (Mês)'] - df_base_meta['Média Histórica (Últimos Meses)']
+        
+        df_base_meta = df_base_meta.sort_values('Meta Projetada (Mês)', ascending=False).reset_index()
+        df_base_meta = df_base_meta.rename(columns=rename_meta)
+        
+        colunas_exibicao_meta = list(rename_meta.values()) + ult_3_meta + ['Média Histórica (Últimos Meses)', 'Meta Projetada (Mês)', 'Variação (Absoluta)']
+        
+        st.write(f"#### Resultados Projetados: {meta_nivel} - {meta_metrica}")
+        st.dataframe(
+            df_base_meta[colunas_exibicao_meta].style.format({
+                c: fmt_meta for c in (ult_3_meta + ['Média Histórica (Últimos Meses)', 'Meta Projetada (Mês)', 'Variação (Absoluta)'])
+            }),
+            use_container_width=True,
+            height=500,
+            hide_index=True
+        )
+        
+        buf_meta = io.BytesIO()
+        with pd.ExcelWriter(buf_meta, engine='xlsxwriter') as w:
+            df_base_meta[colunas_exibicao_meta].to_excel(w, index=False, sheet_name='Simulador Metas')
+            
+        st.download_button(
+            "📥 Exportar Metas Definidas para Excel",
+            data=buf_meta.getvalue(),
+            file_name=f"rotina_8020_metas_{meta_nivel.lower().replace(' ', '_')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
