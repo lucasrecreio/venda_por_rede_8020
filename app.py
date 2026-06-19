@@ -1037,7 +1037,7 @@ with tab_metas:
 
             if qtde_itens > LIMITE_ITENS_NUVEM:
                 st.warning("⚠️ **Limite de Segurança do Servidor Atingido**")
-                st.info(f"A seleção atual geraria uma tabela editável com **{qtde_itens} {nome_chave.title().replace('_', ' ')}s**, o que excede a memória do servidor na nuvem.")
+                st.info(f"A seleção atual geraria uma tabela editável com **{qtde_itens} {nome_chave.title().replace('_', ' ')}**, o que excede a memória do servidor na nuvem.")
                 st.markdown("👉 **Por favor, utilize os filtros na barra lateral esquerda (ex: selecione uma Rede, Filial, Marca ou insira uma lista de códigos) para trabalhar com grupos menores (limite de 800 itens) antes de gerar o simulador.**")
             else:
                 # =====================================================
