@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import io
+import datetime
 import plotly.graph_objects as go
 
 st.set_page_config(page_title="Rotina 8020", layout="wide")
@@ -16,6 +17,7 @@ st.markdown("""<style>
 st.title("Rotina 8020 - Vendas Por Cliente e Rede")
 
 ORDER_MESES = {'jan':1,'fev':2,'mar':3,'abr':4,'mai':5,'jun':6,'jul':7,'ago':8,'set':9,'out':10,'nov':11,'dez':12}
+NOME_MES_NUM = {v: k for k, v in ORDER_MESES.items()}
 
 def delete_chave_cronologica(texto):
     try:
@@ -24,15 +26,34 @@ def delete_chave_cronologica(texto):
     except Exception:
         return (99, 99)
 
+def periodo_para_tupla(periodo_str):
+    """Converte 'jun/26' em (2026, 6)"""
+    try:
+        m, a = str(periodo_str).split('/')
+        return (2000 + int(a), ORDER_MESES.get(m.lower(), 0))
+    except Exception:
+        return None
+
+def tupla_para_periodo(ano, mes):
+    """Converte (2026, 6) em 'jun/26'"""
+    return f"{NOME_MES_NUM.get(mes, '???')}/{str(ano)[-2:]}"
+
+def somar_meses(ano, mes, n):
+    """Soma n meses a partir de (ano, mes), retorna nova tupla (ano, mes)"""
+    total = (ano * 12 + (mes - 1)) + n
+    novo_ano = total // 12
+    novo_mes = total % 12 + 1
+    return (novo_ano, novo_mes)
+
 def fmt_brl(valor):
     try:
-        return "R$ " + f"{int(valor):,}".replace(',', '.')
+        return "R$ " + f"{int(round(valor)):,}".replace(',', '.')
     except Exception:
         return "R$ 0"
 
 def fmt_inteiro(valor):
     try:
-        return f"{int(valor):,}".replace(',', '.')
+        return f"{int(round(valor)):,}".replace(',', '.')
     except Exception:
         return "0"
 
@@ -42,31 +63,48 @@ def fmt_pct(valor):
     except Exception:
         return "0.00%"
 
-# --- NOVAS FUNÇÕES PARA FORMATAÇÃO CONDICIONAL ---
 def fmt_var(valor):
     """Adiciona as setas e formata percentual"""
     try:
         if pd.isna(valor) or valor == float('inf') or valor == float('-inf'):
             return "-"
         if valor > 0:
-            return f"▲ +{valor:.2f}%"
+            return f"\u25b2 +{valor:.2f}%"
         elif valor < 0:
-            return f"▼ {valor:.2f}%"
+            return f"\u25bc {valor:.2f}%"
         else:
-            return "➖ 0.00%"
-    except:
+            return "\u2796 0.00%"
+    except Exception:
         return "-"
 
 def style_var_color(val):
-    """Aplica o CSS de cor Verde/Vermelho com base no valor numérico"""
+    """Aplica o CSS de cor Verde/Vermelho com base no valor numerico"""
     try:
-        if pd.isna(val): return ''
-        if val > 0: return 'color: #10b981; font-weight: bold;' # Verde
-        if val < 0: return 'color: #ef4444; font-weight: bold;' # Vermelho
-    except:
+        if pd.isna(val):
+            return ''
+        if val > 0:
+            return 'color: #10b981; font-weight: bold;'
+        if val < 0:
+            return 'color: #ef4444; font-weight: bold;'
+    except Exception:
         pass
     return ''
-# --------------------------------------------------
+
+def aplicar_cor_variacao(styler, colunas):
+    """Compat entre versoes do pandas (map vs applymap)"""
+    if hasattr(styler, "map"):
+        return styler.map(style_var_color, subset=colunas)
+    return styler.applymap(style_var_color, subset=colunas)
+
+def abrev_brl(valor):
+    if pd.isna(valor) or valor == 0:
+        return ""
+    if valor >= 1_000_000:
+        return f"R$ {valor/1_000_000:.1f}Mi".replace('.', ',')
+    elif valor >= 1_000:
+        return f"R$ {valor/1_000:.1f}K".replace('.', ',')
+    else:
+        return f"R$ {valor:.0f}"
 
 PLOT_BG = "#0d1117"
 PLOT_GRID = "#1a202c"
@@ -105,16 +143,21 @@ dados_originais = carregar_base()
 
 st.sidebar.header("Filtros de Selecao")
 anos_disponiveis = sorted(dados_originais['ANO_EIXO'].unique(), reverse=True)
-anos_selecionados = st.sidebar.multiselect("Ano", anos_disponiveis, default=anos_disponiveis)
+anos_selecionados = st.sidebar.multiselect("Ano", anos_disponiveis)
+
 df_temp = dados_originais[dados_originais['ANO_EIXO'].isin(anos_selecionados)] if anos_selecionados else dados_originais
 todos_meses = sorted(df_temp['PERIODO_LIMPO'].unique(), key=delete_chave_cronologica)
-meses_selecionados = st.sidebar.multiselect("Meses Disponiveis", todos_meses, default=todos_meses)
+
+meses_selecionados = st.sidebar.multiselect("Meses Disponiveis", todos_meses)
 filiais_disponiveis = sorted(df_temp['CODFILIAL'].unique())
-filial_sel = st.sidebar.multiselect("Unidade / Filial", filiais_disponiveis, default=filiais_disponiveis)
+
+filial_sel = st.sidebar.multiselect("Unidade / Filial", filiais_disponiveis)
 redes_disponiveis = sorted(df_temp['REDE'].dropna().unique())
-rede_sel = st.sidebar.multiselect("Rede de Clientes", redes_disponiveis, default=[])
+
+rede_sel = st.sidebar.multiselect("Rede de Clientes", redes_disponiveis)
 marcas_disponiveis = sorted(df_temp['MARCA'].dropna().unique()) if 'MARCA' in df_temp.columns else []
-marca_sel = st.sidebar.multiselect("Marca do Produto", marcas_disponiveis, default=[])
+
+marca_sel = st.sidebar.multiselect("Marca do Produto", marcas_disponiveis)
 busca_cliente = st.sidebar.text_input("Buscar por Nome do Cliente")
 busca_produto = st.sidebar.text_input("Buscar por Nome do Produto")
 st.sidebar.markdown("---")
@@ -173,17 +216,16 @@ with tab_clientes:
         st.warning("Sem dados para os filtros aplicados.")
     else:
         colunas_meses = sorted(df_filtrado['PERIODO_LIMPO'].unique(), key=delete_chave_cronologica)
-        
-        op_visao = st.radio("Métrica de Visualização Comercial (Aba Clientes)", ["Faturamento (R$)", "Volume (Caixas)"], horizontal=True)
+
+        op_visao = st.radio("Metrica de Visualizacao Comercial (Aba Clientes)", ["Faturamento (R$)", "Volume (Caixas)"], horizontal=True)
         col_analise = 'TVENDA' if op_visao == "Faturamento (R$)" else 'QT'
         fmt_visao = fmt_brl if op_visao == "Faturamento (R$)" else fmt_inteiro
 
-        tot_fat  = df_filtrado['TVENDA'].sum()
-        tot_vol  = df_filtrado['QT'].sum()
         tot_luc  = df_filtrado['TLUCRO'].sum() if 'TLUCRO' in df_filtrado.columns else 0
+        tot_fat  = df_filtrado['TVENDA'].sum()
         tot_pos  = df_filtrado['CODCLI'].nunique()
         margem_g = (tot_luc / tot_fat * 100) if tot_fat > 0 else 0
-        
+
         delta_str = None
         if len(colunas_meses) >= 2:
             mes_atual = colunas_meses[-1]
@@ -193,7 +235,7 @@ with tab_clientes:
             if val_ant > 0:
                 delta_val = (val_atual - val_ant) / val_ant * 100
                 delta_str = f"{delta_val:+.1f}% vs {mes_ant}"
-                
+
         st.write("### Indicadores Consolidados do Periodo")
         m1, m2, m3, m4 = st.columns(4)
         m1.metric(f"{op_visao} Total", fmt_visao(df_filtrado[col_analise].sum()), delta=delta_str)
@@ -201,15 +243,14 @@ with tab_clientes:
         m3.metric("Clientes Positivados", f"{tot_pos:,}".replace(',', '.'))
         m4.metric("Margem de Contribuicao", fmt_pct(margem_g))
         st.markdown("---")
-        
-        # Resumo Mensal Nominal
+
         resumo_temp = (
             df_filtrado.groupby('PERIODO_LIMPO')
             .agg(Faturamento=('TVENDA', 'sum'), Volume=('QT', 'sum'), Positivacoes=('CODCLI', 'nunique'))
             .reindex(colunas_meses)
             .fillna(0)
         )
-        
+
         st.write("### Resumo de Desempenho Mensal")
         tabela_topo = {"Metrica": [f"Total {op_visao}", "Total Positivacoes"]}
         for m in colunas_meses:
@@ -219,29 +260,85 @@ with tab_clientes:
             ]
         df_resumo_mensal = pd.DataFrame(tabela_topo)
         st.dataframe(df_resumo_mensal, use_container_width=True, hide_index=True)
-        
-        # --- TABELA DE EVOLUÇÃO PERCENTUAL MOM (COM CORES) ---
-        st.write("### Análise de Evolução Mensal (% MoM)")
-        serie_valores_mensais = resumo_temp['Faturamento' if col_analise == 'TVENDA' else 'Volume']
-        variacao_mom = serie_valores_mensais.pct_change() * 100
-        
-        tabela_mom = {"Metrica": [f"Crescimento MoM (%)"]}
-        for m in colunas_meses:
-            val = variacao_mom.get(m, np.nan) if m != colunas_meses[0] else np.nan
-            tabela_mom[m] = [val]
-            
-        df_evolucao_mom = pd.DataFrame(tabela_mom)
-        
-        # Aplicando a formatação condicional Styler
-        style_mom = df_evolucao_mom.style.format({m: fmt_var for m in colunas_meses})
-        if hasattr(style_mom, "map"):
-            style_mom = style_mom.map(style_var_color, subset=colunas_meses)
+
+        st.write("### Analise de Evolucao Ano Contra Ano (YoY)")
+        st.caption("Apresenta o volume absoluto ano a ano e a variacao em relacao ao mesmo periodo do ano anterior.")
+
+        serie_periodo = (
+            df_filtrado.groupby('PERIODO_LIMPO')[col_analise]
+            .sum()
+        )
+        mapa_valores = {}
+        for periodo, valor in serie_periodo.items():
+            tup = periodo_para_tupla(periodo)
+            if tup:
+                mapa_valores[tup] = valor
+
+        anos_presentes = sorted(set(a for a, m in mapa_valores.keys()))
+        meses_nomes_ordenados = [NOME_MES_NUM[i] for i in range(1, 13)]
+
+        linhas_yoy_vals = []
+        for ano in anos_presentes:
+            linha_val = {"Ano / Evolucao": str(ano)}
+            for mes_num in range(1, 13):
+                valor = mapa_valores.get((ano, mes_num))
+                linha_val[NOME_MES_NUM[mes_num]] = valor if valor is not None else np.nan
+            linhas_yoy_vals.append(linha_val)
+
+        linhas_yoy_vars = []
+        for i in range(1, len(anos_presentes)):
+            ano_ant = anos_presentes[i-1]
+            ano_atual = anos_presentes[i]
+            linha_var = {"Ano / Evolucao": f"Evolucao {str(ano_atual)[-2:]} vs {str(ano_ant)[-2:]}"}
+            for mes_num in range(1, 13):
+                v_atual = mapa_valores.get((ano_atual, mes_num))
+                v_ant = mapa_valores.get((ano_ant, mes_num))
+                if v_atual is not None and v_ant is not None and v_ant > 0:
+                    linha_var[NOME_MES_NUM[mes_num]] = (v_atual - v_ant) / v_ant * 100
+                else:
+                    linha_var[NOME_MES_NUM[mes_num]] = np.nan
+            linhas_yoy_vars.append(linha_var)
+
+        # Tratamento seguro caso a lista de variação esteja vazia (ex: apenas 1 ano selecionado)
+        if linhas_yoy_vals:
+            df_yoy_vals = pd.DataFrame(linhas_yoy_vals).set_index("Ano / Evolucao")
         else:
-            style_mom = style_mom.applymap(style_var_color, subset=colunas_meses)
-            
-        st.dataframe(style_mom, use_container_width=True, hide_index=True)
+            df_yoy_vals = pd.DataFrame(columns=["Ano / Evolucao"] + meses_nomes_ordenados).set_index("Ano / Evolucao")
+
+        if linhas_yoy_vars:
+            df_yoy_vars = pd.DataFrame(linhas_yoy_vars).set_index("Ano / Evolucao")
+        else:
+            df_yoy_vars = pd.DataFrame(columns=["Ano / Evolucao"] + meses_nomes_ordenados).set_index("Ano / Evolucao")
+
+        df_yoy_display = pd.DataFrame(index=df_yoy_vals.index.tolist() + df_yoy_vars.index.tolist(), columns=meses_nomes_ordenados)
         
-        # Matriz Principal baseada na Chave Selecionada
+        for c in meses_nomes_ordenados:
+            df_yoy_display.loc[df_yoy_vals.index, c] = df_yoy_vals[c].apply(lambda x: fmt_visao(x) if pd.notnull(x) else "-")
+            df_yoy_display.loc[df_yoy_vars.index, c] = df_yoy_vars[c].apply(lambda x: fmt_var(x) if pd.notnull(x) else "-")
+
+        def color_yoy(val):
+            if isinstance(val, str):
+                if '▲' in val: return 'color: #10b981; font-weight: bold;'
+                if '▼' in val: return 'color: #ef4444; font-weight: bold;'
+            return ''
+
+        if not df_yoy_display.empty:
+            df_yoy_display.index.name = "Ano / Evolucao"
+            df_yoy_display_reset = df_yoy_display.reset_index()
+            style_yoy = df_yoy_display_reset.style
+            if hasattr(style_yoy, "map"):
+                style_yoy = style_yoy.map(color_yoy, subset=meses_nomes_ordenados)
+            else:
+                style_yoy = style_yoy.applymap(color_yoy, subset=meses_nomes_ordenados)
+            
+            st.dataframe(style_yoy, use_container_width=True, hide_index=True)
+            df_yoy_excel = df_yoy_display_reset.copy()
+        else:
+            st.info("Sem dados suficientes para a analise YoY.")
+            df_yoy_excel = pd.DataFrame()
+
+        st.markdown("---")
+
         matrix_cli = (
             df_filtrado.pivot_table(
                 index=['CODCLI', 'CLIENTE', 'CODREDE', 'REDE'],
@@ -252,73 +349,106 @@ with tab_clientes:
             .fillna(0)
         )
         matrix_cli = matrix_cli.reindex(columns=colunas_meses, fill_value=0)
-        matrix_cli['Histórico Total'] = matrix_cli[colunas_meses].sum(axis=1)
+        matrix_cli['Historico Total'] = matrix_cli[colunas_meses].sum(axis=1)
         ult_3 = colunas_meses[-3:] if len(colunas_meses) >= 3 else colunas_meses
         matrix_cli['Media Ult. 3 Meses'] = matrix_cli[ult_3].mean(axis=1)
-        
-        matrix_cli = matrix_cli.sort_values('Histórico Total', ascending=False).reset_index()
+
+        matrix_cli = matrix_cli.sort_values('Historico Total', ascending=False).reset_index()
         matrix_cli = matrix_cli.rename(columns={'CODCLI': 'Codigo', 'CLIENTE': 'Cliente', 'CODREDE': 'Cod. Rede', 'REDE': 'Rede'})
-        
-        # --- CÁLCULO DA VARIAÇÃO DO ÚLTIMO MÊS PARA A MATRIZ ---
+
         if len(colunas_meses) >= 2:
             mes_atual = colunas_meses[-1]
             mes_ant   = colunas_meses[-2]
-            matrix_cli['Var. Últ. Mês'] = ((matrix_cli[mes_atual] - matrix_cli[mes_ant]) / matrix_cli[mes_ant].replace(0, np.nan)) * 100
+            matrix_cli['Var. Ult. Mes'] = ((matrix_cli[mes_atual] - matrix_cli[mes_ant]) / matrix_cli[mes_ant].replace(0, np.nan)) * 100
         else:
-            matrix_cli['Var. Últ. Mês'] = np.nan
-        
-        matrix_cli['Acumulado'] = matrix_cli['Histórico Total'].cumsum()
-        soma_v = matrix_cli['Histórico Total'].sum()
+            matrix_cli['Var. Ult. Mes'] = np.nan
+
+        if len(colunas_meses) >= 4:
+            mes_atual = colunas_meses[-1]
+            meses_base_3m = colunas_meses[-4:-1]  
+            media_3m_base = matrix_cli[meses_base_3m].mean(axis=1)
+            matrix_cli['Var. vs Media 3M'] = ((matrix_cli[mes_atual] - media_3m_base) / media_3m_base.replace(0, np.nan)) * 100
+        elif len(colunas_meses) >= 2:
+            mes_atual = colunas_meses[-1]
+            meses_base_3m = colunas_meses[:-1]
+            media_3m_base = matrix_cli[meses_base_3m].mean(axis=1)
+            matrix_cli['Var. vs Media 3M'] = ((matrix_cli[mes_atual] - media_3m_base) / media_3m_base.replace(0, np.nan)) * 100
+        else:
+            matrix_cli['Var. vs Media 3M'] = np.nan
+
+        matrix_cli['Acumulado'] = matrix_cli['Historico Total'].cumsum()
+        soma_v = matrix_cli['Historico Total'].sum()
         matrix_cli['Pct Acumulado'] = (matrix_cli['Acumulado'] / soma_v * 100) if soma_v > 0 else 0
         matrix_cli['Curva ABC'] = matrix_cli['Pct Acumulado'].apply(
             lambda x: 'A' if x <= 80 else ('B' if x <= 95 else 'C')
         )
-        
-        colunas_exib = ['Curva ABC', 'Cod. Rede', 'Rede', 'Codigo', 'Cliente'] + colunas_meses + ['Var. Últ. Mês', 'Media Ult. 3 Meses', 'Histórico Total']
-        cols_num = colunas_meses + ['Media Ult. 3 Meses', 'Histórico Total']
-        
+
+        colunas_exib = (
+            ['Curva ABC', 'Cod. Rede', 'Rede', 'Codigo', 'Cliente']
+            + colunas_meses
+            + ['Var. Ult. Mes', 'Var. vs Media 3M', 'Media Ult. 3 Meses', 'Historico Total']
+        )
+        cols_num = colunas_meses + ['Media Ult. 3 Meses', 'Historico Total']
+        cols_var = ['Var. Ult. Mes', 'Var. vs Media 3M']
+
         st.write("### Grade de Resultados por Cliente e Rede")
-        
-        # Formatação Condicional no Streamlit da Grid Principal
+
         format_dict = {c: fmt_visao for c in cols_num}
-        format_dict['Var. Últ. Mês'] = fmt_var
-        
+        for c in cols_var:
+            format_dict[c] = fmt_var
+
         style_grid = matrix_cli[colunas_exib].style.format(format_dict)
-        if hasattr(style_grid, "map"):
-            style_grid = style_grid.map(style_var_color, subset=['Var. Últ. Mês'])
-        else:
-            style_grid = style_grid.applymap(style_var_color, subset=['Var. Últ. Mês'])
-            
+        style_grid = aplicar_cor_variacao(style_grid, cols_var)
+
         st.dataframe(
             style_grid,
             use_container_width=True,
             height=450,
             hide_index=True
         )
-        
-        # Alinhamento e Preparação do Excel
+
         colunas_excel_resumo = ['Metrica'] + colunas_meses
         df_resumo_excel = df_resumo_mensal[colunas_excel_resumo].copy()
-        df_mom_excel = df_evolucao_mom[colunas_excel_resumo].copy()
-        
-        # Garante a formatação textual no Excel
-        for m in colunas_meses:
-            df_mom_excel[m] = df_mom_excel[m].apply(fmt_var)
-        
+        df_resumo_excel = pd.concat(
+            [pd.DataFrame(columns=['Curva ABC', 'Cod. Rede', 'Rede', 'Codigo']), df_resumo_excel],
+            axis=1
+        ).fillna('')
+
         matrix_cli_excel = matrix_cli[colunas_exib].copy()
-        matrix_cli_excel['Var. Últ. Mês'] = matrix_cli_excel['Var. Últ. Mês'].apply(fmt_var)
-        
-        df_resumo_excel = pd.concat([pd.DataFrame(columns=['Curva ABC', 'Cod. Rede', 'Rede', 'Codigo']), df_resumo_excel], axis=1).fillna('')
-        df_mom_excel = pd.concat([pd.DataFrame(columns=['Curva ABC', 'Cod. Rede', 'Rede', 'Codigo']), df_mom_excel], axis=1).fillna('')
-        
+        for c in cols_var:
+            matrix_cli_excel[c] = matrix_cli_excel[c].apply(fmt_var)
+
+        linha_total = {}
+        for c in colunas_exib:
+            if c in cols_num:
+                linha_total[c] = matrix_cli[c].sum()
+            elif c in cols_var:
+                linha_total[c] = ''
+            else:
+                linha_total[c] = ''
+        linha_total['Cliente'] = 'TOTAL GERAL'
+        df_total_linha = pd.DataFrame([linha_total])
+        for c in cols_num:
+            df_total_linha[c] = df_total_linha[c].apply(fmt_visao)
+        matrix_cli_excel = pd.concat([matrix_cli_excel, df_total_linha], ignore_index=True)
+
         buf = io.BytesIO()
         with pd.ExcelWriter(buf, engine='xlsxwriter') as w:
-            df_resumo_excel.to_excel(w, index=False, sheet_name='Clientes 8020', startrow=0)
-            df_mom_excel.to_excel(w, index=False, sheet_name='Clientes 8020', startrow=len(df_resumo_excel) + 1)
-            matrix_cli_excel.to_excel(w, index=False, sheet_name='Clientes 8020', startrow=len(df_resumo_excel) + len(df_mom_excel) + 4)
-            
+            startrow = 0
+            df_resumo_excel.to_excel(w, index=False, sheet_name='Clientes 8020', startrow=startrow)
+            startrow += len(df_resumo_excel) + 2
+
+            if not df_yoy_excel.empty:
+                ws_label = pd.DataFrame([{"Ano": "Analise de Evolucao YoY"}])
+                ws_label.to_excel(w, index=False, sheet_name='Clientes 8020', startrow=startrow, header=False)
+                startrow += 1
+                df_yoy_excel.to_excel(w, index=False, sheet_name='Clientes 8020', startrow=startrow)
+                startrow += len(df_yoy_excel) + 2
+
+            matrix_cli_excel.to_excel(w, index=False, sheet_name='Clientes 8020', startrow=startrow)
+
         st.download_button(
-            "Exportar Análise de Clientes para Excel",
+            "Exportar Analise de Clientes para Excel",
             data=buf.getvalue(),
             file_name="rotina_8020_clientes.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -382,36 +512,82 @@ with tab_produtos:
             hide_index=True
         )
 
+        df_var_marca_export = pd.DataFrame()
+
         if 'MARCA' in df_filtrado.columns:
-            st.write("### Participacao de Faturamento por Marca (Top 15)")
-            df_marca_g = (
-                df_filtrado.groupby('MARCA')['TVENDA']
-                .sum()
-                .sort_values(ascending=True)
-                .tail(15)
-                .reset_index()
+            st.write("### Participacao de Faturamento por Marca (Top 10)")
+            colunas_meses_prod = sorted(df_filtrado['PERIODO_LIMPO'].unique(), key=delete_chave_cronologica)
+            top10_marcas = (
+                df_filtrado.groupby('MARCA')['TVENDA'].sum().sort_values(ascending=False).head(10).index.tolist()
             )
-            df_marca_g['fat_fmt'] = df_marca_g['TVENDA'].apply(fmt_brl)
-            fig_marca = go.Figure(go.Bar(
-                x=df_marca_g['TVENDA'],
-                y=df_marca_g['MARCA'],
-                orientation='h',
-                marker_color='#3b82f6',
-                text=df_marca_g['fat_fmt'],
-                textposition='outside',
-                hovertemplate='<b>%{y}</b><br>%{customdata}<extra></extra>',
-                customdata=df_marca_g['fat_fmt'],
+            df_evo_marca = (
+                df_filtrado[df_filtrado['MARCA'].isin(top10_marcas)]
+                .pivot_table(index='MARCA', columns='PERIODO_LIMPO', values='TVENDA', aggfunc='sum')
+                .reindex(columns=colunas_meses_prod, fill_value=0)
+            )
+
+            df_evo_marca['Total'] = df_evo_marca.sum(axis=1)
+            df_evo_hm = df_evo_marca.sort_values('Total', ascending=True).drop(columns=['Total'])
+
+            z_data = df_evo_hm.values
+            text_data = [[abrev_brl(val) for val in row] for row in z_data]
+
+            fig_hm = go.Figure(data=go.Heatmap(
+                z=z_data,
+                x=colunas_meses_prod,
+                y=df_evo_hm.index,
+                text=text_data,
+                texttemplate="%{text}",
+                colorscale='Blues',
+                showscale=False,
+                hovertemplate='<b>%{y}</b><br>%{x}<br>R$ %{z:,.2f}<extra></extra>'
             ))
-            layout_marca = base_layout(480)
-            layout_marca['xaxis'] = dict(gridcolor=PLOT_GRID, showticklabels=False, tickvals=[])
-            layout_marca['yaxis'] = dict(gridcolor=PLOT_GRID)
-            layout_marca['margin'] = dict(l=10, r=150, t=40, b=10)
-            fig_marca.update_layout(**layout_marca)
-            st.plotly_chart(fig_marca, use_container_width=True)
+            layout_hm = base_layout(450)
+            layout_hm['xaxis'].update(showgrid=False, zeroline=False)
+            layout_hm['yaxis'].update(showgrid=False, zeroline=False)
+            fig_hm.update_layout(**layout_hm)
+            st.plotly_chart(fig_hm, use_container_width=True)
+
+            ultimos_6m_prod = colunas_meses_prod[-6:] if len(colunas_meses_prod) >= 6 else colunas_meses_prod
+            if len(colunas_meses_prod) >= 1:
+                st.write("### Variacao das Principais Marcas (Top 10)")
+                mes_atual_p = colunas_meses_prod[-1]
+                tup_atual = periodo_para_tupla(mes_atual_p)
+                mes_yoy = tupla_para_periodo(tup_atual[0]-1, tup_atual[1]) if tup_atual else None
+
+                df_var_marca = df_evo_marca.sort_values('Total', ascending=False).drop(columns=['Total'])
+                df_var_marca = df_var_marca[ultimos_6m_prod].copy().reset_index()
+
+                media_6m = df_var_marca[ultimos_6m_prod].mean(axis=1)
+                df_var_marca['Var. vs Media 6M'] = ((df_var_marca[mes_atual_p] - media_6m) / media_6m.replace(0, np.nan)) * 100
+
+                if mes_yoy in colunas_meses_prod:
+                    val_atual = df_evo_marca.loc[df_var_marca['MARCA'], mes_atual_p]
+                    val_yoy = df_evo_marca.loc[df_var_marca['MARCA'], mes_yoy]
+                    df_var_marca['Var. YoY'] = ((val_atual.values - val_yoy.values) / val_yoy.replace(0, np.nan).values) * 100
+                else:
+                    df_var_marca['Var. YoY'] = np.nan
+
+                cols_fmt_m = {c: fmt_brl for c in ultimos_6m_prod}
+                cols_fmt_m['Var. vs Media 6M'] = fmt_var
+                cols_fmt_m['Var. YoY'] = fmt_var
+
+                style_var_m = df_var_marca.style.format(cols_fmt_m)
+                style_var_m = aplicar_cor_variacao(style_var_m, ['Var. vs Media 6M', 'Var. YoY'])
+                st.dataframe(style_var_m, use_container_width=True, hide_index=True)
+
+                df_var_marca_export = df_var_marca.copy()
+                for c in ultimos_6m_prod:
+                    df_var_marca_export[c] = df_var_marca_export[c].apply(fmt_brl)
+                df_var_marca_export['Var. vs Media 6M'] = df_var_marca_export['Var. vs Media 6M'].apply(fmt_var)
+                df_var_marca_export['Var. YoY'] = df_var_marca_export['Var. YoY'].apply(fmt_var)
 
         buf_p = io.BytesIO()
         with pd.ExcelWriter(buf_p, engine='xlsxwriter') as w:
             df_prod[base_cols].to_excel(w, index=False, sheet_name='Produtos 8020')
+            if not df_var_marca_export.empty:
+                df_var_marca_export.to_excel(w, index=False, sheet_name='Top 10 Marcas')
+
         st.download_button(
             "Exportar Produtos para Excel",
             data=buf_p.getvalue(),
@@ -630,13 +806,14 @@ with tab_inteligencia:
         st.write("### Exportar Analise Completa")
         buf_intel = io.BytesIO()
         with pd.ExcelWriter(buf_intel, engine='xlsxwriter') as w:
-            df_evo = pd.DataFrame({'Periodo': colunas_meses_ib, 'Faturamento': serie_fat.values})
-            df_evo.to_excel(w, index=False, sheet_name='Evolucao Mensal')
-            top10_cli.to_excel(w, index=False, sheet_name='Top 10 Clientes')
+            pd.DataFrame({"Periodo": colunas_meses_ib, "Faturamento": serie_fat.values}).to_excel(
+                w, index=False, sheet_name="Evolucao Mensal"
+            )
+            top10_cli.to_excel(w, index=False, sheet_name="Top 10 Clientes")
             if not df_churn.empty:
-                df_churn.to_excel(w, index=False, sheet_name='Risco Churn')
-            df_ticket.to_excel(w, index=False, sheet_name='Ticket por Rede')
-            df_mix.to_excel(w, index=False, sheet_name='Mix por Cliente')
+                df_churn.to_excel(w, index=False, sheet_name="Risco Churn")
+            df_ticket.to_excel(w, index=False, sheet_name="Ticket por Rede")
+            df_mix.to_excel(w, index=False, sheet_name="Mix por Cliente")
         st.download_button(
             "Exportar Inteligencia de Negocio para Excel",
             data=buf_intel.getvalue(),
@@ -648,71 +825,470 @@ with tab_inteligencia:
 # ABA 4 - SIMULADOR DE METAS
 # ---------------------------------------------------------------
 with tab_metas:
-    if df_filtrado.empty:
-        st.warning("Sem dados para os filtros aplicados. Ajuste os filtros na barra lateral.")
+    if dados_originais.empty:
+        st.warning("Sem dados carregados para simular metas.")
     else:
-        st.write("### 🎯 Planejamento e Simulador de Metas")
-        
-        c_op1, c_op2, c_op3 = st.columns(3)
-        meta_metrica = c_op1.radio("Métrica Alvo para a Meta", ["Faturamento (R$)", "Volume (Caixas)"])
-        meta_nivel = c_op2.selectbox("Nível de Detalhamento da Meta", ["Por Cliente", "Por Rede", "Por Marca", "Por Produto"])
-        meta_pct = c_op3.number_input("% de Crescimento Desejado", min_value=-100.0, max_value=1000.0, value=10.0, step=1.0)
-        
-        fator_meta = 1 + (meta_pct / 100.0)
-        col_analise_meta = 'TVENDA' if meta_metrica == "Faturamento (R$)" else 'QT'
-        fmt_meta = fmt_brl if meta_metrica == "Faturamento (R$)" else fmt_inteiro
-        
-        if meta_nivel == "Por Cliente":
-            grp_meta = ['CODCLI', 'CLIENTE']
-            rename_meta = {'CODCLI': 'Código', 'CLIENTE': 'Cliente'}
-        elif meta_nivel == "Por Rede":
-            grp_meta = ['CODREDE', 'REDE']
-            rename_meta = {'CODREDE': 'Cód. Rede', 'REDE': 'Rede'}
-        elif meta_nivel == "Por Marca":
-            grp_meta = ['MARCA']
-            rename_meta = {'MARCA': 'Marca'}
+        st.write("## Simulador de Metas Comerciais")
+        st.caption(
+            "Defina metas de crescimento por Rede, Cliente ou Produto/Marca, em Faturamento ou Volume. "
+            "As metas de Rede sao quebradas automaticamente entre os clientes da rede, proporcionalmente "
+            "ao historico de cada um."
+        )
+
+        df_metas_base = dados_originais.copy()
+
+        # =========================================================
+        # 1. DETERMINAR MES VIGENTE E PERIODOS DISPONIVEIS
+        # =========================================================
+        hoje = datetime.date.today()
+        ano_vigente, mes_vigente = hoje.year, hoje.month
+        periodo_vigente_tupla = (ano_vigente, mes_vigente)
+        periodo_vigente_str = tupla_para_periodo(ano_vigente, mes_vigente)
+
+        todos_periodos_base = sorted(df_metas_base['PERIODO_LIMPO'].unique(), key=delete_chave_cronologica)
+        tuplas_disponiveis = sorted(
+            [t for t in (periodo_para_tupla(p) for p in todos_periodos_base) if t is not None]
+        )
+
+        if not tuplas_disponiveis:
+            st.warning("Nao foi possivel identificar periodos validos na base.")
         else:
-            grp_meta = ['CODPROD', 'DESCRICAO']
-            rename_meta = {'CODPROD': 'Código', 'DESCRICAO': 'Produto'}
+            ultimo_periodo_dados = tuplas_disponiveis[-1]
+
+            # =====================================================
+            # 2. SELECAO DO PERIODO DA META
+            # =====================================================
+            st.write("### 1. Periodo da Meta")
+
+            opcoes_periodo_meta = {
+                "Mes Vigente (" + periodo_vigente_str + ")": (periodo_vigente_tupla, periodo_vigente_tupla),
+                "Proximo Mes (" + tupla_para_periodo(*somar_meses(*periodo_vigente_tupla, 1)) + ")":
+                    (somar_meses(*periodo_vigente_tupla, 1), somar_meses(*periodo_vigente_tupla, 1)),
+                "Proximo Trimestre": (
+                    somar_meses(*periodo_vigente_tupla, 1),
+                    somar_meses(*periodo_vigente_tupla, 3)
+                ),
+                "Proximo Semestre": (
+                    somar_meses(*periodo_vigente_tupla, 1),
+                    somar_meses(*periodo_vigente_tupla, 6)
+                ),
+                "Periodo Customizado": None,
+            }
+
+            col_p1, col_p2 = st.columns([2, 1])
+            with col_p1:
+                escolha_periodo = st.selectbox("Selecione o periodo alvo da meta", list(opcoes_periodo_meta.keys()))
+
+            if escolha_periodo == "Periodo Customizado":
+                with col_p2:
+                    n_meses_custom = st.number_input("Quantidade de meses a frente", min_value=1, max_value=24, value=1)
+                inicio_meta = somar_meses(*periodo_vigente_tupla, 1)
+                fim_meta = somar_meses(*periodo_vigente_tupla, int(n_meses_custom))
+            else:
+                inicio_meta, fim_meta = opcoes_periodo_meta[escolha_periodo]
+
+            periodos_meta_tuplas = []
+            cursor = inicio_meta
+            while cursor <= fim_meta:
+                periodos_meta_tuplas.append(cursor)
+                if cursor == fim_meta:
+                    break
+                cursor = somar_meses(*cursor, 1)
+            periodos_meta_str = [tupla_para_periodo(a, m) for a, m in periodos_meta_tuplas]
+            n_meses_meta = len(periodos_meta_tuplas)
+
+            st.info(
+                "Periodo da meta: **" + (periodos_meta_str[0] if periodos_meta_str else "-") +
+                ("" if n_meses_meta <= 1 else " ate " + periodos_meta_str[-1]) +
+                "** (" + str(n_meses_meta) + " mes(es))"
+            )
+
+            # =====================================================
+            # 3. SELECAO DA BASE DE COMPARACAO
+            # =====================================================
+            st.write("### 2. Base de Comparacao")
+
+            sugestao_base = "Mesmo Periodo no Ano Anterior"
+
+            opcoes_base = [
+                "Mesmo Periodo no Ano Anterior",
+                "Media dos Ultimos 3 Meses",
+                "Media dos Ultimos 6 Meses",
+            ]
+            idx_sugestao = opcoes_base.index(sugestao_base)
+            base_comparacao = st.selectbox(
+                "Base de comparacao (sugestao automatica selecionada; pode trocar)",
+                opcoes_base,
+                index=idx_sugestao
+            )
+
+            def obter_periodos_base(periodos_meta_tuplas, base_comparacao, ultimo_periodo_dados):
+                if base_comparacao == "Mesmo Periodo no Ano Anterior":
+                    return [(a - 1, m) for a, m in periodos_meta_tuplas]
+                elif base_comparacao == "Media dos Ultimos 3 Meses":
+                    fim = ultimo_periodo_dados
+                    base = []
+                    cursor = fim
+                    for _ in range(3):
+                        base.append(cursor)
+                        cursor = somar_meses(*cursor, -1)
+                    return sorted(base)
+                else: 
+                    fim = ultimo_periodo_dados
+                    base = []
+                    cursor = fim
+                    for _ in range(6):
+                        base.append(cursor)
+                        cursor = somar_meses(*cursor, -1)
+                    return sorted(base)
+
+            periodos_base_tuplas = obter_periodos_base(periodos_meta_tuplas, base_comparacao, ultimo_periodo_dados)
+            periodos_base_str = [tupla_para_periodo(a, m) for a, m in periodos_base_tuplas]
+
+            st.caption("Periodos usados como base: " + ", ".join(periodos_base_str))
+
+            st.markdown("---")
+
+            # =====================================================
+            # 4. PAINEL HISTORICO DE REFERENCIA
+            # =====================================================
+            st.write("### 3. Historico de Referencia")
+            st.caption("Ultimos 6 meses de dados contados a partir do mes passado, mais o periodo do ano anterior referenciado para a meta.")
+
+            mes_passado_tupla = somar_meses(ano_vigente, mes_vigente, -1)
+            ultimos_6_tuplas = [somar_meses(*mes_passado_tupla, -i) for i in range(6)]
+            ultimos_6_tuplas.sort()
+            colunas_hist_6m = [tupla_para_periodo(a, m) for a, m in ultimos_6_tuplas]
+
+            periodos_meta_ano_ant = [(a - 1, m) for a, m in periodos_meta_tuplas]
+            periodos_meta_ano_ant_str = [tupla_para_periodo(a, m) for a, m in periodos_meta_ano_ant]
+            col_ano_ant_nome = f"Ref. Ano Ant. ({'+'.join(periodos_meta_ano_ant_str)})"
+
+            nivel_meta = st.radio(
+                "Nivel de definicao da meta",
+                ["Rede de Clientes", "Cliente Individual", "Produto / Marca", "Produto Individual"],
+                horizontal=True
+            )
+
+            metrica_meta = st.radio(
+                "Metrica base para a meta",
+                ["Faturamento (R$)", "Volume (Caixas)"],
+                horizontal=True
+            )
+            col_metrica = 'TVENDA' if metrica_meta == "Faturamento (R$)" else 'QT'
+            fmt_metrica = fmt_brl if metrica_meta == "Faturamento (R$)" else fmt_inteiro
+
+            # =====================================================
+            # 5. CONSTRUCAO DA TABELA DE HISTORICO + DEFINICAO DE META
+            # =====================================================
+            if nivel_meta == "Rede de Clientes":
+                chave_cols = ['CODREDE', 'REDE']
+                nome_chave = 'REDE'
+            elif nivel_meta == "Cliente Individual":
+                chave_cols = ['CODCLI', 'CLIENTE']
+                nome_chave = 'CLIENTE'
+            elif nivel_meta == "Produto Individual":
+                chave_cols = ['CODPROD', 'DESCRICAO']
+                nome_chave = 'DESCRICAO'
+            else:
+                chave_cols = ['MARCA']
+                nome_chave = 'MARCA'
+
+            pivot_hist = (
+                df_metas_base.pivot_table(
+                    index=chave_cols,
+                    columns='PERIODO_LIMPO',
+                    values=col_metrica,
+                    aggfunc='sum'
+                )
+                .fillna(0)
+            )
+
+            colunas_disponiveis_6m = [c for c in colunas_hist_6m if c in pivot_hist.columns]
+            pivot_hist_exib = pivot_hist.reindex(columns=colunas_disponiveis_6m, fill_value=0).copy()
             
-        colunas_meses_meta = sorted(df_filtrado['PERIODO_LIMPO'].unique(), key=delete_chave_cronologica)
-        
-        df_base_meta = df_filtrado.pivot_table(
-            index=grp_meta,
-            columns='PERIODO_LIMPO',
-            values=col_analise_meta,
-            aggfunc='sum'
-        ).fillna(0)
-        
-        df_base_meta = df_base_meta.reindex(columns=colunas_meses_meta, fill_value=0)
-        ult_3_meta = colunas_meses_meta[-3:] if len(colunas_meses_meta) >= 3 else colunas_meses_meta
-        df_base_meta['Média Histórica (Últimos Meses)'] = df_base_meta[ult_3_meta].mean(axis=1)
-        
-        df_base_meta['Meta Projetada (Mês)'] = df_base_meta['Média Histórica (Últimos Meses)'] * fator_meta
-        df_base_meta['Variação (Absoluta)'] = df_base_meta['Meta Projetada (Mês)'] - df_base_meta['Média Histórica (Últimos Meses)']
-        
-        df_base_meta = df_base_meta.sort_values('Meta Projetada (Mês)', ascending=False).reset_index()
-        df_base_meta = df_base_meta.rename(columns=rename_meta)
-        
-        colunas_exibicao_meta = list(rename_meta.values()) + ult_3_meta + ['Média Histórica (Últimos Meses)', 'Meta Projetada (Mês)', 'Variação (Absoluta)']
-        
-        st.write(f"#### Resultados Projetados: {meta_nivel} - {meta_metrica}")
-        st.dataframe(
-            df_base_meta[colunas_exibicao_meta].style.format({
-                c: fmt_meta for c in (ult_3_meta + ['Média Histórica (Últimos Meses)', 'Meta Projetada (Mês)', 'Variação (Absoluta)'])
-            }),
-            use_container_width=True,
-            height=500,
-            hide_index=True
-        )
-        
-        buf_meta = io.BytesIO()
-        with pd.ExcelWriter(buf_meta, engine='xlsxwriter') as w:
-            df_base_meta[colunas_exibicao_meta].to_excel(w, index=False, sheet_name='Simulador Metas')
+            cols_ref_ant = [c for c in periodos_meta_ano_ant_str if c in pivot_hist.columns]
+            if cols_ref_ant:
+                pivot_hist_exib[col_ano_ant_nome] = pivot_hist[cols_ref_ant].sum(axis=1)
+            else:
+                pivot_hist_exib[col_ano_ant_nome] = 0
+
+            # --- CORRECAO CRUCIAL DA BASE MATEMATICA ---
+            colunas_base_disponiveis = [c for c in periodos_base_str if c in pivot_hist.columns]
+            if colunas_base_disponiveis:
+                if base_comparacao == "Mesmo Periodo no Ano Anterior":
+                    valor_base_serie = pivot_hist[colunas_base_disponiveis].sum(axis=1)
+                else:
+                    valor_base_serie = pivot_hist[colunas_base_disponiveis].mean(axis=1) * n_meses_meta
+            else:
+                valor_base_serie = pd.Series(0, index=pivot_hist.index)
+
+            col_base_meta = 'Base p/ Meta (' + base_comparacao + ')'
+            pivot_hist_exib[col_base_meta] = valor_base_serie
+            pivot_hist_exib = pivot_hist_exib.sort_values(col_base_meta, ascending=False)
+            pivot_hist_exib = pivot_hist_exib.reset_index()
+
+            if nivel_meta == "Rede de Clientes":
+                pivot_hist_exib = pivot_hist_exib.rename(columns={'CODREDE': 'Codigo', 'REDE': 'Nome'})
+                col_nome_exib = 'Nome'
+            elif nivel_meta == "Cliente Individual":
+                pivot_hist_exib = pivot_hist_exib.rename(columns={'CODCLI': 'Codigo', 'CLIENTE': 'Nome'})
+                col_nome_exib = 'Nome'
+            elif nivel_meta == "Produto Individual":
+                pivot_hist_exib = pivot_hist_exib.rename(columns={'CODPROD': 'Codigo', 'DESCRICAO': 'Nome'})
+                col_nome_exib = 'Nome'
+            else:
+                pivot_hist_exib = pivot_hist_exib.rename(columns={'MARCA': 'Nome'})
+                col_nome_exib = 'Nome'
+
+            pivot_hist_exib_top = pivot_hist_exib.copy()
+
+            st.write("#### Historico (somente leitura)")
+            cols_fmt_hist = colunas_disponiveis_6m + [col_ano_ant_nome, col_base_meta]
             
-        st.download_button(
-            "📥 Exportar Metas Definidas para Excel",
-            data=buf_meta.getvalue(),
-            file_name=f"rotina_8020_metas_{meta_nivel.lower().replace(' ', '_')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+            def style_destaque_base(styler):
+                cols_destaque = [c for c in cols_fmt_hist if c in periodos_base_str or c == col_base_meta]
+                if cols_destaque:
+                    return styler.set_properties(subset=cols_destaque, **{'background-color': '#1e293b', 'color': '#38bdf8', 'font-weight': 'bold'})
+                return styler
+
+            style_hist = pivot_hist_exib_top.style.format({c: fmt_metrica for c in cols_fmt_hist})
+            style_hist = style_destaque_base(style_hist)
+
+            st.dataframe(
+                style_hist,
+                use_container_width=True,
+                height=350,
+                hide_index=True
+            )
+
+            st.markdown("---")
+
+            # =====================================================
+            # 6. DEFINICAO DA META (SINCRONIZADA COM SESSION STATE)
+            # =====================================================
+            st.write("### 4. Definicao da Meta")
+            st.caption(
+                "Edite o **Crescimento %** OU o **Valor Absoluto** diretamente na tabela. A alteração de um refletirá automaticamente no outro."
+            )
+
+            chave_session_data = f"metas_data_{nivel_meta}_{metrica_meta}_{escolha_periodo}_{base_comparacao}"
+
+            # Inicializa a tabela no Session State apenas uma vez para esta configuração
+            if chave_session_data not in st.session_state:
+                df_editor_init = pd.DataFrame({
+                    'Codigo': pivot_hist_exib_top['Codigo'] if 'Codigo' in pivot_hist_exib_top.columns else pivot_hist_exib_top[col_nome_exib],
+                    'Nome': pivot_hist_exib_top[col_nome_exib],
+                    'Base Historica': pivot_hist_exib_top[col_base_meta],
+                    'Base Fmt': pivot_hist_exib_top[col_base_meta].apply(fmt_metrica),
+                    'Crescimento %': [0.0] * len(pivot_hist_exib_top),
+                    'Valor Absoluto Meta': pivot_hist_exib_top[col_base_meta].round(2),
+                })
+                st.session_state[chave_session_data] = df_editor_init
+
+            # Controle para aplicar lote
+            col_input1, col_input2, _ = st.columns([2, 2, 4])
+            with col_input1:
+                pct_lote = st.number_input("Aplicar % de cresc. em lote:", value=0.0, step=1.0, format="%.2f")
+            with col_input2:
+                st.write("") # alinhamento visual
+                if st.button("Aplicar Lote na Tabela"):
+                    st.session_state[chave_session_data]['Crescimento %'] = pct_lote
+                    st.session_state[chave_session_data]['Valor Absoluto Meta'] = (
+                        st.session_state[chave_session_data]['Base Historica'] * (1 + pct_lote / 100)
+                    ).round(2)
+                    st.rerun()
+
+            # Callback para sincronizar celulas de % e Valor ao vivo
+            def sync_editor():
+                edited = st.session_state[f"ui_editor_{chave_session_data}"]
+                df = st.session_state[chave_session_data]
+                for idx_str, changes in edited['edited_rows'].items():
+                    idx = int(idx_str)
+                    base = df.at[idx, 'Base Historica']
+                    
+                    if 'Crescimento %' in changes:
+                        new_pct = changes['Crescimento %']
+                        df.at[idx, 'Crescimento %'] = new_pct
+                        df.at[idx, 'Valor Absoluto Meta'] = round(base * (1 + new_pct / 100), 2)
+                    elif 'Valor Absoluto Meta' in changes:
+                        new_val = changes['Valor Absoluto Meta']
+                        df.at[idx, 'Valor Absoluto Meta'] = new_val
+                        df.at[idx, 'Crescimento %'] = round(((new_val - base) / base * 100), 2) if base != 0 else 0
+
+            st.data_editor(
+                st.session_state[chave_session_data],
+                key=f"ui_editor_{chave_session_data}",
+                on_change=sync_editor,
+                disabled=['Codigo', 'Nome', 'Base Fmt', 'Base Historica'],
+                column_config={
+                    'Base Historica': None, # Ocultamos a base float, deixamos apenas a formatada abaixo
+                    'Base Fmt': st.column_config.TextColumn("Base Histórica", disabled=True),
+                    'Crescimento %': st.column_config.NumberColumn("Crescimento %", format="%.2f%%", step=1.0),
+                    'Valor Absoluto Meta': st.column_config.NumberColumn("Valor Meta (Absoluto)", format="%.2f", step=100.0),
+                },
+                use_container_width=True,
+                height=400,
+                hide_index=True
+            )
+
+            # Extraimos o dataframe final para os calculos abaixo
+            df_editado = st.session_state[chave_session_data].copy()
+            df_editado['Meta Final'] = df_editado['Valor Absoluto Meta']
+
+            # =====================================================
+            # 7. QUEBRA HIERARQUICA: REDE -> CLIENTES
+            # =====================================================
+            df_quebra_cliente = pd.DataFrame()
+            if nivel_meta == "Rede de Clientes":
+                st.markdown("---")
+                st.write("### 5. Quebra da Meta por Cliente (dentro de cada Rede)")
+                st.caption(
+                    "A meta definida por rede e distribuida entre os clientes daquela rede, "
+                    "proporcionalmente ao historico de participacao de cada cliente na base escolhida."
+                )
+
+                linhas_quebra = []
+                for _, linha_rede in df_editado.iterrows():
+                    cod_rede = linha_rede['Codigo']
+                    meta_rede = linha_rede['Meta Final']
+
+                    clientes_da_rede = df_metas_base[df_metas_base['CODREDE'] == cod_rede][['CODCLI', 'CLIENTE']].drop_duplicates()
+                    if clientes_da_rede.empty:
+                        continue
+
+                    hist_clientes = (
+                        df_metas_base[
+                            (df_metas_base['CODREDE'] == cod_rede) &
+                            (df_metas_base['PERIODO_LIMPO'].isin(colunas_base_disponiveis))
+                        ]
+                        .groupby(['CODCLI', 'CLIENTE'])[col_metrica]
+                        .sum()
+                        .div(max(len(colunas_base_disponiveis), 1))
+                    )
+
+                    soma_hist_rede = hist_clientes.sum()
+                    for (cod_cli, nome_cli), valor_hist in hist_clientes.items():
+                        participacao = (valor_hist / soma_hist_rede) if soma_hist_rede > 0 else (1 / len(hist_clientes))
+                        meta_cliente = meta_rede * participacao
+                        linhas_quebra.append({
+                            'Cod. Rede': cod_rede,
+                            'Rede': linha_rede['Nome'],
+                            'Codigo Cliente': cod_cli,
+                            'Cliente': nome_cli,
+                            'Base Historica Cliente': valor_hist,
+                            'Participacao na Rede %': participacao * 100,
+                            'Meta Cliente': meta_cliente,
+                        })
+
+                if linhas_quebra:
+                    df_quebra_cliente = pd.DataFrame(linhas_quebra)
+                    st.dataframe(
+                        df_quebra_cliente.style.format({
+                            'Base Historica Cliente': fmt_metrica,
+                            'Participacao na Rede %': fmt_pct,
+                            'Meta Cliente': fmt_metrica,
+                        }),
+                        use_container_width=True,
+                        height=350,
+                        hide_index=True
+                    )
+                else:
+                    st.info("Defina metas com crescimento diferente de zero para visualizar a quebra por cliente.")
+
+            st.markdown("---")
+
+            # =====================================================
+            # 8. RESUMO CONSOLIDADO DA META
+            # =====================================================
+            st.write("### Resumo da Meta")
+            soma_base_total = df_editado['Base Historica'].sum()
+            soma_meta_total = df_editado['Meta Final'].sum()
+            crescimento_total = ((soma_meta_total - soma_base_total) / soma_base_total * 100) if soma_base_total > 0 else 0
+
+            rc1, rc2, rc3 = st.columns(3)
+            rc1.metric("Base Historica Total", fmt_metrica(soma_base_total))
+            rc2.metric("Meta Total Definida", fmt_metrica(soma_meta_total))
+            rc3.metric("Crescimento Implicito", fmt_pct(crescimento_total))
+
+            df_grafico_meta = df_editado.sort_values('Meta Final', ascending=False).head(15)
+            fig_meta = go.Figure()
+            fig_meta.add_trace(go.Bar(
+                name='Base Historica',
+                y=df_grafico_meta['Nome'],
+                x=df_grafico_meta['Base Historica'],
+                orientation='h',
+                marker_color='#475569',
+                hovertemplate='<b>%{y}</b><br>Base: %{x:,.0f}<extra></extra>',
+            ))
+            fig_meta.add_trace(go.Bar(
+                name='Meta Definida',
+                y=df_grafico_meta['Nome'],
+                x=df_grafico_meta['Meta Final'],
+                orientation='h',
+                marker_color='#3b82f6',
+                hovertemplate='<b>%{y}</b><br>Meta: %{x:,.0f}<extra></extra>',
+            ))
+            layout_meta = base_layout(450)
+            layout_meta['barmode'] = 'group'
+            layout_meta['legend'] = dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1)
+            layout_meta['yaxis'] = dict(gridcolor=PLOT_GRID, autorange='reversed')
+            fig_meta.update_layout(**layout_meta)
+            st.plotly_chart(fig_meta, use_container_width=True)
+
+            # =====================================================
+            # 9. EXPORTACAO PARA EXCEL
+            # =====================================================
+            st.markdown("---")
+            st.write("### Exportar Meta para Excel")
+            st.caption("Gera uma planilha pronta para envio, com o resumo, o detalhamento por item e a quebra por cliente (se aplicavel).")
+
+            df_export_resumo = pd.DataFrame({
+                'Campo': [
+                    'Nivel da Meta', 'Metrica', 'Periodo da Meta', 'Base de Comparacao',
+                    'Periodos Base Utilizados', 'Base Historica Total', 'Meta Total Definida',
+                    'Crescimento Implicito Total'
+                ],
+                'Valor': [
+                    nivel_meta, metrica_meta,
+                    (periodos_meta_str[0] if periodos_meta_str else '-') + (
+                        '' if n_meses_meta <= 1 else ' ate ' + periodos_meta_str[-1]
+                    ),
+                    base_comparacao,
+                    ", ".join(periodos_base_str),
+                    fmt_metrica(soma_base_total),
+                    fmt_metrica(soma_meta_total),
+                    fmt_pct(crescimento_total),
+                ]
+            })
+
+            df_export_detalhe = df_editado[
+                ['Codigo', 'Nome', 'Base Historica', 'Crescimento %', 'Meta Final']
+            ].copy()
+            df_export_detalhe['Base Historica'] = df_export_detalhe['Base Historica'].apply(fmt_metrica)
+            df_export_detalhe['Meta Final'] = df_export_detalhe['Meta Final'].apply(fmt_metrica)
+            df_export_detalhe['Crescimento %'] = df_export_detalhe['Crescimento %'].apply(fmt_pct)
+
+            buf_metas = io.BytesIO()
+            with pd.ExcelWriter(buf_metas, engine='xlsxwriter') as w:
+                df_export_resumo.to_excel(w, index=False, sheet_name='Resumo da Meta')
+                df_export_detalhe.to_excel(w, index=False, sheet_name='Detalhamento')
+                if not df_quebra_cliente.empty:
+                    df_quebra_excel = df_quebra_cliente.copy()
+                    df_quebra_excel['Base Historica Cliente'] = df_quebra_excel['Base Historica Cliente'].apply(fmt_metrica)
+                    df_quebra_excel['Participacao na Rede %'] = df_quebra_excel['Participacao na Rede %'].apply(fmt_pct)
+                    df_quebra_excel['Meta Cliente'] = df_quebra_excel['Meta Cliente'].apply(fmt_metrica)
+                    df_quebra_excel.to_excel(w, index=False, sheet_name='Quebra por Cliente')
+                
+                df_hist_excel = pivot_hist_exib_top.copy()
+                for c in cols_fmt_hist:
+                    if c in df_hist_excel.columns:
+                        df_hist_excel[c] = df_hist_excel[c].apply(fmt_metrica)
+                df_hist_excel.to_excel(w, index=False, sheet_name='Historico de Referencia')
+
+            st.download_button(
+                "Exportar Meta para Excel",
+                data=buf_metas.getvalue(),
+                file_name="rotina_8020_meta_" + nivel_meta.replace(' ', '_').replace('/', '-') + ".xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
