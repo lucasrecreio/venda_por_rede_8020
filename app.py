@@ -135,7 +135,6 @@ def carregar_base():
         {'1': 'Matriz - 1', '2': 'Loja - 2', 1: 'Matriz - 1', 2: 'Loja - 2'}
     ).fillna(df['CODFILIAL'].astype(str))
     
-    # OTIMIZAÇÃO: Conversão para float32 para poupar memória no servidor Cloud
     for col in ['QT', 'TVENDA', 'TLUCRO']:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype('float32')
@@ -181,7 +180,7 @@ with st.sidebar.expander("Filtragem Avancada por Lotes"):
 # LÓGICA DE FILTRAGEM INTELIGENTE
 # ==============================================================================
 df_filtrado = dados_originais.copy()
-df_filtrado_metas = dados_originais.copy() # Base cega para os filtros de data
+df_filtrado_metas = dados_originais.copy() 
 
 # 1. Filtros de Data aplicados APENAS ao df_filtrado principal
 if anos_selecionados:
@@ -991,7 +990,7 @@ with tab_metas:
             st.markdown("---")
 
             # =====================================================
-            # 4. PAINEL HISTORICO DE REFERENCIA
+            # 4. PAINEL HISTORICO DE REFERENCIA E TRAVA DE SEGURANÇA
             # =====================================================
             st.write("### 3. Historico de Referencia")
             st.caption("Ultimos 6 meses de dados contados a partir do mes passado, mais o periodo do ano anterior referenciado para a meta.")
@@ -1019,9 +1018,6 @@ with tab_metas:
             col_metrica = 'TVENDA' if metrica_meta == "Faturamento (R$)" else 'QT'
             fmt_metrica = fmt_brl if metrica_meta == "Faturamento (R$)" else fmt_inteiro
 
-            # =====================================================
-            # 5. CONSTRUCAO DA TABELA DE HISTORICO + DEFINICAO DE META
-            # =====================================================
             if nivel_meta == "Rede de Clientes":
                 chave_cols = ['CODREDE', 'REDE']
                 nome_chave = 'REDE'
@@ -1035,313 +1031,325 @@ with tab_metas:
                 chave_cols = ['MARCA']
                 nome_chave = 'MARCA'
 
-            pivot_hist = (
-                df_metas_base.pivot_table(
-                    index=chave_cols,
-                    columns='PERIODO_LIMPO',
-                    values=col_metrica,
-                    aggfunc='sum'
-                )
-                .fillna(0)
-            )
+            # TRAVA DE SEGURANÇA PARA A NUVEM
+            LIMITE_ITENS_NUVEM = 800
+            qtde_itens = df_metas_base[chave_cols[0]].nunique()
 
-            colunas_disponiveis_6m = [c for c in colunas_hist_6m if c in pivot_hist.columns]
-            pivot_hist_exib = pivot_hist.reindex(columns=colunas_disponiveis_6m, fill_value=0).copy()
-            
-            cols_ref_ant = [c for c in periodos_meta_ano_ant_str if c in pivot_hist.columns]
-            if cols_ref_ant:
-                pivot_hist_exib[col_ano_ant_nome] = pivot_hist[cols_ref_ant].sum(axis=1)
+            if qtde_itens > LIMITE_ITENS_NUVEM:
+                st.warning("⚠️ **Limite de Segurança do Servidor Atingido**")
+                st.info(f"A seleção atual geraria uma tabela editável com **{qtde_itens} {nome_chave.title().replace('_', ' ')}s**, o que excede a memória do servidor na nuvem.")
+                st.markdown("👉 **Por favor, utilize os filtros na barra lateral esquerda (ex: selecione uma Rede, Filial, Marca ou insira uma lista de códigos) para trabalhar com grupos menores (limite de 800 itens) antes de gerar o simulador.**")
             else:
-                pivot_hist_exib[col_ano_ant_nome] = 0
-
-            # --- CORRECAO CRUCIAL DA BASE MATEMATICA ---
-            colunas_base_disponiveis = [c for c in periodos_base_str if c in pivot_hist.columns]
-            if colunas_base_disponiveis:
-                if base_comparacao == "Mesmo Periodo no Ano Anterior":
-                    valor_base_serie = pivot_hist[colunas_base_disponiveis].sum(axis=1)
-                else:
-                    valor_base_serie = pivot_hist[colunas_base_disponiveis].mean(axis=1) * n_meses_meta
-            else:
-                valor_base_serie = pd.Series(0, index=pivot_hist.index)
-
-            col_base_meta = 'Base p/ Meta (' + base_comparacao + ')'
-            pivot_hist_exib[col_base_meta] = valor_base_serie
-            pivot_hist_exib = pivot_hist_exib.sort_values(col_base_meta, ascending=False)
-            pivot_hist_exib = pivot_hist_exib.reset_index()
-
-            if nivel_meta == "Rede de Clientes":
-                pivot_hist_exib = pivot_hist_exib.rename(columns={'CODREDE': 'Codigo', 'REDE': 'Nome'})
-                col_nome_exib = 'Nome'
-            elif nivel_meta == "Cliente Individual":
-                pivot_hist_exib = pivot_hist_exib.rename(columns={'CODCLI': 'Codigo', 'CLIENTE': 'Nome'})
-                col_nome_exib = 'Nome'
-            elif nivel_meta == "Produto Individual":
-                pivot_hist_exib = pivot_hist_exib.rename(columns={'CODPROD': 'Codigo', 'DESCRICAO': 'Nome'})
-                col_nome_exib = 'Nome'
-            else:
-                pivot_hist_exib = pivot_hist_exib.rename(columns={'MARCA': 'Nome'})
-                col_nome_exib = 'Nome'
-
-            pivot_hist_exib_top = pivot_hist_exib.copy()
-
-            st.write("#### Historico (somente leitura)")
-            cols_fmt_hist = colunas_disponiveis_6m + [col_ano_ant_nome, col_base_meta]
-            
-            def style_destaque_base(styler):
-                cols_destaque = [c for c in cols_fmt_hist if c in periodos_base_str or c == col_base_meta]
-                if cols_destaque:
-                    return styler.set_properties(subset=cols_destaque, **{'background-color': '#1e293b', 'color': '#38bdf8', 'font-weight': 'bold'})
-                return styler
-
-            style_hist = pivot_hist_exib_top.style.format({c: fmt_metrica for c in cols_fmt_hist})
-            style_hist = style_destaque_base(style_hist)
-
-            st.dataframe(
-                style_hist,
-                use_container_width=True,
-                height=350,
-                hide_index=True
-            )
-
-            st.markdown("---")
-
-            # =====================================================
-            # 6. DEFINICAO DA META (SINCRONIZADA COM SESSION STATE E FILTROS)
-            # =====================================================
-            st.write("### 4. Definicao da Meta")
-            st.caption(
-                "Edite o **Crescimento %** OU o **Valor Absoluto** diretamente na tabela. A alteração de um refletirá automaticamente no outro."
-            )
-
-            chave_session_data = f"metas_data_{nivel_meta}_{metrica_meta}_{escolha_periodo}_{base_comparacao}"
-            
-            col_id_sessao = 'Codigo' if 'Codigo' in pivot_hist_exib_top.columns else col_nome_exib
-            ids_atuais = pivot_hist_exib_top[col_id_sessao].astype(str).tolist()
-
-            # OTIMIZAÇÃO CRÍTICA DO SESSION STATE: 
-            # Atualiza a tabela editável toda vez que a lista de filtros do gestor for alterada
-            precisa_atualizar = False
-            if chave_session_data not in st.session_state:
-                precisa_atualizar = True
-            else:
-                ids_sessao = st.session_state[chave_session_data]['Codigo'].astype(str).tolist()
-                if ids_sessao != ids_atuais:
-                    precisa_atualizar = True
-
-            if precisa_atualizar:
-                df_editor_init = pd.DataFrame({
-                    'Codigo': pivot_hist_exib_top[col_id_sessao],
-                    'Nome': pivot_hist_exib_top[col_nome_exib],
-                    'Base Historica': pivot_hist_exib_top[col_base_meta],
-                    'Base Fmt': pivot_hist_exib_top[col_base_meta].apply(fmt_metrica),
-                    'Crescimento %': [0.0] * len(pivot_hist_exib_top),
-                    'Valor Absoluto Meta': pivot_hist_exib_top[col_base_meta].round(2),
-                })
-                st.session_state[chave_session_data] = df_editor_init
-
-            # Controle para aplicar lote
-            col_input1, col_input2, _ = st.columns([2, 2, 4])
-            with col_input1:
-                pct_lote = st.number_input("Aplicar % de cresc. em lote:", value=0.0, step=1.0, format="%.2f")
-            with col_input2:
-                st.write("") # alinhamento visual
-                if st.button("Aplicar Lote na Tabela"):
-                    st.session_state[chave_session_data]['Crescimento %'] = pct_lote
-                    st.session_state[chave_session_data]['Valor Absoluto Meta'] = (
-                        st.session_state[chave_session_data]['Base Historica'] * (1 + pct_lote / 100)
-                    ).round(2)
-                    st.rerun()
-
-            # Callback para sincronizar celulas de % e Valor ao vivo
-            def sync_editor():
-                edited = st.session_state[f"ui_editor_{chave_session_data}"]
-                df = st.session_state[chave_session_data]
-                for idx_str, changes in edited['edited_rows'].items():
-                    idx = int(idx_str)
-                    base = df.at[idx, 'Base Historica']
-                    
-                    if 'Crescimento %' in changes:
-                        new_pct = changes['Crescimento %']
-                        df.at[idx, 'Crescimento %'] = new_pct
-                        df.at[idx, 'Valor Absoluto Meta'] = round(base * (1 + new_pct / 100), 2)
-                    elif 'Valor Absoluto Meta' in changes:
-                        new_val = changes['Valor Absoluto Meta']
-                        df.at[idx, 'Valor Absoluto Meta'] = new_val
-                        df.at[idx, 'Crescimento %'] = round(((new_val - base) / base * 100), 2) if base != 0 else 0
-
-            st.data_editor(
-                st.session_state[chave_session_data],
-                key=f"ui_editor_{chave_session_data}",
-                on_change=sync_editor,
-                disabled=['Codigo', 'Nome', 'Base Fmt', 'Base Historica'],
-                column_config={
-                    'Base Historica': None, # Ocultamos a base float, deixamos apenas a formatada abaixo
-                    'Base Fmt': st.column_config.TextColumn("Base Histórica", disabled=True),
-                    'Crescimento %': st.column_config.NumberColumn("Crescimento %", format="%.2f%%", step=1.0),
-                    'Valor Absoluto Meta': st.column_config.NumberColumn("Valor Meta (Absoluto)", format="%.2f", step=100.0),
-                },
-                use_container_width=True,
-                height=400,
-                hide_index=True
-            )
-
-            # Extraimos o dataframe final para os calculos abaixo
-            df_editado = st.session_state[chave_session_data].copy()
-            df_editado['Meta Final'] = df_editado['Valor Absoluto Meta']
-
-            # =====================================================
-            # 7. QUEBRA HIERARQUICA: REDE -> CLIENTES
-            # =====================================================
-            df_quebra_cliente = pd.DataFrame()
-            if nivel_meta == "Rede de Clientes":
-                st.markdown("---")
-                st.write("### 5. Quebra da Meta por Cliente (dentro de cada Rede)")
-                st.caption(
-                    "A meta definida por rede e distribuida entre os clientes daquela rede, "
-                    "proporcionalmente ao historico de participacao de cada cliente na base escolhida."
+                # =====================================================
+                # 5. CONSTRUCAO DA TABELA DE HISTORICO + DEFINICAO DE META
+                # =====================================================
+                pivot_hist = (
+                    df_metas_base.pivot_table(
+                        index=chave_cols,
+                        columns='PERIODO_LIMPO',
+                        values=col_metrica,
+                        aggfunc='sum'
+                    )
+                    .fillna(0)
                 )
 
-                linhas_quebra = []
-                for _, linha_rede in df_editado.iterrows():
-                    cod_rede = linha_rede['Codigo']
-                    meta_rede = linha_rede['Meta Final']
-
-                    clientes_da_rede = df_metas_base[df_metas_base['CODREDE'] == cod_rede][['CODCLI', 'CLIENTE']].drop_duplicates()
-                    if clientes_da_rede.empty:
-                        continue
-
-                    hist_clientes = (
-                        df_metas_base[
-                            (df_metas_base['CODREDE'] == cod_rede) &
-                            (df_metas_base['PERIODO_LIMPO'].isin(colunas_base_disponiveis))
-                        ]
-                        .groupby(['CODCLI', 'CLIENTE'])[col_metrica]
-                        .sum()
-                        .div(max(len(colunas_base_disponiveis), 1))
-                    )
-
-                    soma_hist_rede = hist_clientes.sum()
-                    for (cod_cli, nome_cli), valor_hist in hist_clientes.items():
-                        participacao = (valor_hist / soma_hist_rede) if soma_hist_rede > 0 else (1 / len(hist_clientes))
-                        meta_cliente = meta_rede * participacao
-                        linhas_quebra.append({
-                            'Cod. Rede': cod_rede,
-                            'Rede': linha_rede['Nome'],
-                            'Codigo Cliente': cod_cli,
-                            'Cliente': nome_cli,
-                            'Base Historica Cliente': valor_hist,
-                            'Participacao na Rede %': participacao * 100,
-                            'Meta Cliente': meta_cliente,
-                        })
-
-                if linhas_quebra:
-                    df_quebra_cliente = pd.DataFrame(linhas_quebra)
-                    st.dataframe(
-                        df_quebra_cliente.style.format({
-                            'Base Historica Cliente': fmt_metrica,
-                            'Participacao na Rede %': fmt_pct,
-                            'Meta Cliente': fmt_metrica,
-                        }),
-                        use_container_width=True,
-                        height=350,
-                        hide_index=True
-                    )
-                else:
-                    st.info("Defina metas com crescimento diferente de zero para visualizar a quebra por cliente.")
-
-            st.markdown("---")
-
-            # =====================================================
-            # 8. RESUMO CONSOLIDADO DA META
-            # =====================================================
-            st.write("### Resumo da Meta")
-            soma_base_total = df_editado['Base Historica'].sum()
-            soma_meta_total = df_editado['Meta Final'].sum()
-            crescimento_total = ((soma_meta_total - soma_base_total) / soma_base_total * 100) if soma_base_total > 0 else 0
-
-            rc1, rc2, rc3 = st.columns(3)
-            rc1.metric("Base Historica Total", fmt_metrica(soma_base_total))
-            rc2.metric("Meta Total Definida", fmt_metrica(soma_meta_total))
-            rc3.metric("Crescimento Implicito", fmt_pct(crescimento_total))
-
-            df_grafico_meta = df_editado.sort_values('Meta Final', ascending=False).head(15)
-            fig_meta = go.Figure()
-            fig_meta.add_trace(go.Bar(
-                name='Base Historica',
-                y=df_grafico_meta['Nome'],
-                x=df_grafico_meta['Base Historica'],
-                orientation='h',
-                marker_color='#475569',
-                hovertemplate='<b>%{y}</b><br>Base: %{x:,.0f}<extra></extra>',
-            ))
-            fig_meta.add_trace(go.Bar(
-                name='Meta Definida',
-                y=df_grafico_meta['Nome'],
-                x=df_grafico_meta['Meta Final'],
-                orientation='h',
-                marker_color='#3b82f6',
-                hovertemplate='<b>%{y}</b><br>Meta: %{x:,.0f}<extra></extra>',
-            ))
-            layout_meta = base_layout(450)
-            layout_meta['barmode'] = 'group'
-            layout_meta['legend'] = dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1)
-            layout_meta['yaxis'] = dict(gridcolor=PLOT_GRID, autorange='reversed')
-            fig_meta.update_layout(**layout_meta)
-            st.plotly_chart(fig_meta, use_container_width=True)
-
-            # =====================================================
-            # 9. EXPORTACAO PARA EXCEL
-            # =====================================================
-            st.markdown("---")
-            st.write("### Exportar Meta para Excel")
-            st.caption("Gera uma planilha pronta para envio, com o resumo, o detalhamento por item e a quebra por cliente (se aplicavel).")
-
-            df_export_resumo = pd.DataFrame({
-                'Campo': [
-                    'Nivel da Meta', 'Metrica', 'Periodo da Meta', 'Base de Comparacao',
-                    'Periodos Base Utilizados', 'Base Historica Total', 'Meta Total Definida',
-                    'Crescimento Implicito Total'
-                ],
-                'Valor': [
-                    nivel_meta, metrica_meta,
-                    (periodos_meta_str[0] if periodos_meta_str else '-') + (
-                        '' if n_meses_meta <= 1 else ' ate ' + periodos_meta_str[-1]
-                    ),
-                    base_comparacao,
-                    ", ".join(periodos_base_str),
-                    fmt_metrica(soma_base_total),
-                    fmt_metrica(soma_meta_total),
-                    fmt_pct(crescimento_total),
-                ]
-            })
-
-            df_export_detalhe = df_editado[
-                ['Codigo', 'Nome', 'Base Historica', 'Crescimento %', 'Meta Final']
-            ].copy()
-            df_export_detalhe['Base Historica'] = df_export_detalhe['Base Historica'].apply(fmt_metrica)
-            df_export_detalhe['Meta Final'] = df_export_detalhe['Meta Final'].apply(fmt_metrica)
-            df_export_detalhe['Crescimento %'] = df_export_detalhe['Crescimento %'].apply(fmt_pct)
-
-            buf_metas = io.BytesIO()
-            with pd.ExcelWriter(buf_metas, engine='xlsxwriter') as w:
-                df_export_resumo.to_excel(w, index=False, sheet_name='Resumo da Meta')
-                df_export_detalhe.to_excel(w, index=False, sheet_name='Detalhamento')
-                if not df_quebra_cliente.empty:
-                    df_quebra_excel = df_quebra_cliente.copy()
-                    df_quebra_excel['Base Historica Cliente'] = df_quebra_excel['Base Historica Cliente'].apply(fmt_metrica)
-                    df_quebra_excel['Participacao na Rede %'] = df_quebra_excel['Participacao na Rede %'].apply(fmt_pct)
-                    df_quebra_excel['Meta Cliente'] = df_quebra_excel['Meta Cliente'].apply(fmt_metrica)
-                    df_quebra_excel.to_excel(w, index=False, sheet_name='Quebra por Cliente')
+                colunas_disponiveis_6m = [c for c in colunas_hist_6m if c in pivot_hist.columns]
+                pivot_hist_exib = pivot_hist.reindex(columns=colunas_disponiveis_6m, fill_value=0).copy()
                 
-                df_hist_excel = pivot_hist_exib_top.copy()
-                for c in cols_fmt_hist:
-                    if c in df_hist_excel.columns:
-                        df_hist_excel[c] = df_hist_excel[c].apply(fmt_metrica)
-                df_hist_excel.to_excel(w, index=False, sheet_name='Historico de Referencia')
+                cols_ref_ant = [c for c in periodos_meta_ano_ant_str if c in pivot_hist.columns]
+                if cols_ref_ant:
+                    pivot_hist_exib[col_ano_ant_nome] = pivot_hist[cols_ref_ant].sum(axis=1)
+                else:
+                    pivot_hist_exib[col_ano_ant_nome] = 0
 
-            st.download_button(
-                "Exportar Meta para Excel",
-                data=buf_metas.getvalue(),
-                file_name="rotina_8020_meta_" + nivel_meta.replace(' ', '_').replace('/', '-') + ".xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+                # --- CORRECAO CRUCIAL DA BASE MATEMATICA ---
+                colunas_base_disponiveis = [c for c in periodos_base_str if c in pivot_hist.columns]
+                if colunas_base_disponiveis:
+                    if base_comparacao == "Mesmo Periodo no Ano Anterior":
+                        valor_base_serie = pivot_hist[colunas_base_disponiveis].sum(axis=1)
+                    else:
+                        valor_base_serie = pivot_hist[colunas_base_disponiveis].mean(axis=1) * n_meses_meta
+                else:
+                    valor_base_serie = pd.Series(0, index=pivot_hist.index)
+
+                col_base_meta = 'Base p/ Meta (' + base_comparacao + ')'
+                pivot_hist_exib[col_base_meta] = valor_base_serie
+                pivot_hist_exib = pivot_hist_exib.sort_values(col_base_meta, ascending=False)
+                pivot_hist_exib = pivot_hist_exib.reset_index()
+
+                if nivel_meta == "Rede de Clientes":
+                    pivot_hist_exib = pivot_hist_exib.rename(columns={'CODREDE': 'Codigo', 'REDE': 'Nome'})
+                    col_nome_exib = 'Nome'
+                elif nivel_meta == "Cliente Individual":
+                    pivot_hist_exib = pivot_hist_exib.rename(columns={'CODCLI': 'Codigo', 'CLIENTE': 'Nome'})
+                    col_nome_exib = 'Nome'
+                elif nivel_meta == "Produto Individual":
+                    pivot_hist_exib = pivot_hist_exib.rename(columns={'CODPROD': 'Codigo', 'DESCRICAO': 'Nome'})
+                    col_nome_exib = 'Nome'
+                else:
+                    pivot_hist_exib = pivot_hist_exib.rename(columns={'MARCA': 'Nome'})
+                    col_nome_exib = 'Nome'
+
+                pivot_hist_exib_top = pivot_hist_exib.copy()
+
+                st.write("#### Historico (somente leitura)")
+                cols_fmt_hist = colunas_disponiveis_6m + [col_ano_ant_nome, col_base_meta]
+                
+                def style_destaque_base(styler):
+                    cols_destaque = [c for c in cols_fmt_hist if c in periodos_base_str or c == col_base_meta]
+                    if cols_destaque:
+                        return styler.set_properties(subset=cols_destaque, **{'background-color': '#1e293b', 'color': '#38bdf8', 'font-weight': 'bold'})
+                    return styler
+
+                style_hist = pivot_hist_exib_top.style.format({c: fmt_metrica for c in cols_fmt_hist})
+                style_hist = style_destaque_base(style_hist)
+
+                st.dataframe(
+                    style_hist,
+                    use_container_width=True,
+                    height=350,
+                    hide_index=True
+                )
+
+                st.markdown("---")
+
+                # =====================================================
+                # 6. DEFINICAO DA META (SINCRONIZADA COM SESSION STATE E FILTROS)
+                # =====================================================
+                st.write("### 4. Definicao da Meta")
+                st.caption(
+                    "Edite o **Crescimento %** OU o **Valor Absoluto** diretamente na tabela. A alteração de um refletirá automaticamente no outro."
+                )
+
+                chave_session_data = f"metas_data_{nivel_meta}_{metrica_meta}_{escolha_periodo}_{base_comparacao}"
+                
+                col_id_sessao = 'Codigo' if 'Codigo' in pivot_hist_exib_top.columns else col_nome_exib
+                ids_atuais = pivot_hist_exib_top[col_id_sessao].astype(str).tolist()
+
+                # OTIMIZAÇÃO CRÍTICA DO SESSION STATE: 
+                # Atualiza a tabela editável toda vez que a lista de filtros do gestor for alterada
+                precisa_atualizar = False
+                if chave_session_data not in st.session_state:
+                    precisa_atualizar = True
+                else:
+                    ids_sessao = st.session_state[chave_session_data]['Codigo'].astype(str).tolist()
+                    if ids_sessao != ids_atuais:
+                        precisa_atualizar = True
+
+                if precisa_atualizar:
+                    df_editor_init = pd.DataFrame({
+                        'Codigo': pivot_hist_exib_top[col_id_sessao],
+                        'Nome': pivot_hist_exib_top[col_nome_exib],
+                        'Base Historica': pivot_hist_exib_top[col_base_meta],
+                        'Base Fmt': pivot_hist_exib_top[col_base_meta].apply(fmt_metrica),
+                        'Crescimento %': [0.0] * len(pivot_hist_exib_top),
+                        'Valor Absoluto Meta': pivot_hist_exib_top[col_base_meta].round(2),
+                    })
+                    st.session_state[chave_session_data] = df_editor_init
+
+                # Controle para aplicar lote
+                col_input1, col_input2, _ = st.columns([2, 2, 4])
+                with col_input1:
+                    pct_lote = st.number_input("Aplicar % de cresc. em lote:", value=0.0, step=1.0, format="%.2f")
+                with col_input2:
+                    st.write("") # alinhamento visual
+                    if st.button("Aplicar Lote na Tabela"):
+                        st.session_state[chave_session_data]['Crescimento %'] = pct_lote
+                        st.session_state[chave_session_data]['Valor Absoluto Meta'] = (
+                            st.session_state[chave_session_data]['Base Historica'] * (1 + pct_lote / 100)
+                        ).round(2)
+                        st.rerun()
+
+                # Callback para sincronizar celulas de % e Valor ao vivo
+                def sync_editor():
+                    edited = st.session_state[f"ui_editor_{chave_session_data}"]
+                    df = st.session_state[chave_session_data]
+                    for idx_str, changes in edited['edited_rows'].items():
+                        idx = int(idx_str)
+                        base = df.at[idx, 'Base Historica']
+                        
+                        if 'Crescimento %' in changes:
+                            new_pct = changes['Crescimento %']
+                            df.at[idx, 'Crescimento %'] = new_pct
+                            df.at[idx, 'Valor Absoluto Meta'] = round(base * (1 + new_pct / 100), 2)
+                        elif 'Valor Absoluto Meta' in changes:
+                            new_val = changes['Valor Absoluto Meta']
+                            df.at[idx, 'Valor Absoluto Meta'] = new_val
+                            df.at[idx, 'Crescimento %'] = round(((new_val - base) / base * 100), 2) if base != 0 else 0
+
+                st.data_editor(
+                    st.session_state[chave_session_data],
+                    key=f"ui_editor_{chave_session_data}",
+                    on_change=sync_editor,
+                    disabled=['Codigo', 'Nome', 'Base Fmt', 'Base Historica'],
+                    column_config={
+                        'Base Historica': None, # Ocultamos a base float, deixamos apenas a formatada abaixo
+                        'Base Fmt': st.column_config.TextColumn("Base Histórica", disabled=True),
+                        'Crescimento %': st.column_config.NumberColumn("Crescimento %", format="%.2f%%", step=1.0),
+                        'Valor Absoluto Meta': st.column_config.NumberColumn("Valor Meta (Absoluto)", format="%.2f", step=100.0),
+                    },
+                    use_container_width=True,
+                    height=400,
+                    hide_index=True
+                )
+
+                # Extraimos o dataframe final para os calculos abaixo
+                df_editado = st.session_state[chave_session_data].copy()
+                df_editado['Meta Final'] = df_editado['Valor Absoluto Meta']
+
+                # =====================================================
+                # 7. QUEBRA HIERARQUICA: REDE -> CLIENTES
+                # =====================================================
+                df_quebra_cliente = pd.DataFrame()
+                if nivel_meta == "Rede de Clientes":
+                    st.markdown("---")
+                    st.write("### 5. Quebra da Meta por Cliente (dentro de cada Rede)")
+                    st.caption(
+                        "A meta definida por rede e distribuida entre os clientes daquela rede, "
+                        "proporcionalmente ao historico de participacao de cada cliente na base escolhida."
+                    )
+
+                    linhas_quebra = []
+                    for _, linha_rede in df_editado.iterrows():
+                        cod_rede = linha_rede['Codigo']
+                        meta_rede = linha_rede['Meta Final']
+
+                        clientes_da_rede = df_metas_base[df_metas_base['CODREDE'] == cod_rede][['CODCLI', 'CLIENTE']].drop_duplicates()
+                        if clientes_da_rede.empty:
+                            continue
+
+                        hist_clientes = (
+                            df_metas_base[
+                                (df_metas_base['CODREDE'] == cod_rede) &
+                                (df_metas_base['PERIODO_LIMPO'].isin(colunas_base_disponiveis))
+                            ]
+                            .groupby(['CODCLI', 'CLIENTE'])[col_metrica]
+                            .sum()
+                            .div(max(len(colunas_base_disponiveis), 1))
+                        )
+
+                        soma_hist_rede = hist_clientes.sum()
+                        for (cod_cli, nome_cli), valor_hist in hist_clientes.items():
+                            participacao = (valor_hist / soma_hist_rede) if soma_hist_rede > 0 else (1 / len(hist_clientes))
+                            meta_cliente = meta_rede * participacao
+                            linhas_quebra.append({
+                                'Cod. Rede': cod_rede,
+                                'Rede': linha_rede['Nome'],
+                                'Codigo Cliente': cod_cli,
+                                'Cliente': nome_cli,
+                                'Base Historica Cliente': valor_hist,
+                                'Participacao na Rede %': participacao * 100,
+                                'Meta Cliente': meta_cliente,
+                            })
+
+                    if linhas_quebra:
+                        df_quebra_cliente = pd.DataFrame(linhas_quebra)
+                        st.dataframe(
+                            df_quebra_cliente.style.format({
+                                'Base Historica Cliente': fmt_metrica,
+                                'Participacao na Rede %': fmt_pct,
+                                'Meta Cliente': fmt_metrica,
+                            }),
+                            use_container_width=True,
+                            height=350,
+                            hide_index=True
+                        )
+                    else:
+                        st.info("Defina metas com crescimento diferente de zero para visualizar a quebra por cliente.")
+
+                st.markdown("---")
+
+                # =====================================================
+                # 8. RESUMO CONSOLIDADO DA META
+                # =====================================================
+                st.write("### Resumo da Meta")
+                soma_base_total = df_editado['Base Historica'].sum()
+                soma_meta_total = df_editado['Meta Final'].sum()
+                crescimento_total = ((soma_meta_total - soma_base_total) / soma_base_total * 100) if soma_base_total > 0 else 0
+
+                rc1, rc2, rc3 = st.columns(3)
+                rc1.metric("Base Historica Total", fmt_metrica(soma_base_total))
+                rc2.metric("Meta Total Definida", fmt_metrica(soma_meta_total))
+                rc3.metric("Crescimento Implicito", fmt_pct(crescimento_total))
+
+                df_grafico_meta = df_editado.sort_values('Meta Final', ascending=False).head(15)
+                fig_meta = go.Figure()
+                fig_meta.add_trace(go.Bar(
+                    name='Base Historica',
+                    y=df_grafico_meta['Nome'],
+                    x=df_grafico_meta['Base Historica'],
+                    orientation='h',
+                    marker_color='#475569',
+                    hovertemplate='<b>%{y}</b><br>Base: %{x:,.0f}<extra></extra>',
+                ))
+                fig_meta.add_trace(go.Bar(
+                    name='Meta Definida',
+                    y=df_grafico_meta['Nome'],
+                    x=df_grafico_meta['Meta Final'],
+                    orientation='h',
+                    marker_color='#3b82f6',
+                    hovertemplate='<b>%{y}</b><br>Meta: %{x:,.0f}<extra></extra>',
+                ))
+                layout_meta = base_layout(450)
+                layout_meta['barmode'] = 'group'
+                layout_meta['legend'] = dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1)
+                layout_meta['yaxis'] = dict(gridcolor=PLOT_GRID, autorange='reversed')
+                fig_meta.update_layout(**layout_meta)
+                st.plotly_chart(fig_meta, use_container_width=True)
+
+                # =====================================================
+                # 9. EXPORTACAO PARA EXCEL
+                # =====================================================
+                st.markdown("---")
+                st.write("### Exportar Meta para Excel")
+                st.caption("Gera uma planilha pronta para envio, com o resumo, o detalhamento por item e a quebra por cliente (se aplicavel).")
+
+                df_export_resumo = pd.DataFrame({
+                    'Campo': [
+                        'Nivel da Meta', 'Metrica', 'Periodo da Meta', 'Base de Comparacao',
+                        'Periodos Base Utilizados', 'Base Historica Total', 'Meta Total Definida',
+                        'Crescimento Implicito Total'
+                    ],
+                    'Valor': [
+                        nivel_meta, metrica_meta,
+                        (periodos_meta_str[0] if periodos_meta_str else '-') + (
+                            '' if n_meses_meta <= 1 else ' ate ' + periodos_meta_str[-1]
+                        ),
+                        base_comparacao,
+                        ", ".join(periodos_base_str),
+                        fmt_metrica(soma_base_total),
+                        fmt_metrica(soma_meta_total),
+                        fmt_pct(crescimento_total),
+                    ]
+                })
+
+                df_export_detalhe = df_editado[
+                    ['Codigo', 'Nome', 'Base Historica', 'Crescimento %', 'Meta Final']
+                ].copy()
+                df_export_detalhe['Base Historica'] = df_export_detalhe['Base Historica'].apply(fmt_metrica)
+                df_export_detalhe['Meta Final'] = df_export_detalhe['Meta Final'].apply(fmt_metrica)
+                df_export_detalhe['Crescimento %'] = df_export_detalhe['Crescimento %'].apply(fmt_pct)
+
+                buf_metas = io.BytesIO()
+                with pd.ExcelWriter(buf_metas, engine='xlsxwriter') as w:
+                    df_export_resumo.to_excel(w, index=False, sheet_name='Resumo da Meta')
+                    df_export_detalhe.to_excel(w, index=False, sheet_name='Detalhamento')
+                    if not df_quebra_cliente.empty:
+                        df_quebra_excel = df_quebra_cliente.copy()
+                        df_quebra_excel['Base Historica Cliente'] = df_quebra_excel['Base Historica Cliente'].apply(fmt_metrica)
+                        df_quebra_excel['Participacao na Rede %'] = df_quebra_excel['Participacao na Rede %'].apply(fmt_pct)
+                        df_quebra_excel['Meta Cliente'] = df_quebra_excel['Meta Cliente'].apply(fmt_metrica)
+                        df_quebra_excel.to_excel(w, index=False, sheet_name='Quebra por Cliente')
+                    
+                    df_hist_excel = pivot_hist_exib_top.copy()
+                    for c in cols_fmt_hist:
+                        if c in df_hist_excel.columns:
+                            df_hist_excel[c] = df_hist_excel[c].apply(fmt_metrica)
+                    df_hist_excel.to_excel(w, index=False, sheet_name='Historico de Referencia')
+
+                st.download_button(
+                    "Exportar Meta para Excel",
+                    data=buf_metas.getvalue(),
+                    file_name="rotina_8020_meta_" + nivel_meta.replace(' ', '_').replace('/', '-') + ".xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
