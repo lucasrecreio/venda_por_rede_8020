@@ -134,9 +134,11 @@ def carregar_base():
     df['CODFILIAL'] = df['CODFILIAL'].map(
         {'1': 'Matriz - 1', '2': 'Loja - 2', 1: 'Matriz - 1', 2: 'Loja - 2'}
     ).fillna(df['CODFILIAL'].astype(str))
+    
+    # OTIMIZAÇÃO: Conversão para float32 para poupar memória no servidor Cloud
     for col in ['QT', 'TVENDA', 'TLUCRO']:
         if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype('float32')
     return df
 
 dados_originais = carregar_base()
@@ -874,7 +876,7 @@ with tab_metas:
             "ao historico de cada um."
         )
 
-        df_metas_base = df_filtrado_metas.copy()
+        df_metas_base = df_filtrado_metas
 
         # =========================================================
         # 1. DETERMINAR MES VIGENTE E PERIODOS DISPONIVEIS
@@ -1104,7 +1106,7 @@ with tab_metas:
             st.markdown("---")
 
             # =====================================================
-            # 6. DEFINICAO DA META (SINCRONIZADA COM SESSION STATE)
+            # 6. DEFINICAO DA META (SINCRONIZADA COM SESSION STATE E FILTROS)
             # =====================================================
             st.write("### 4. Definicao da Meta")
             st.caption(
@@ -1112,11 +1114,23 @@ with tab_metas:
             )
 
             chave_session_data = f"metas_data_{nivel_meta}_{metrica_meta}_{escolha_periodo}_{base_comparacao}"
+            
+            col_id_sessao = 'Codigo' if 'Codigo' in pivot_hist_exib_top.columns else col_nome_exib
+            ids_atuais = pivot_hist_exib_top[col_id_sessao].astype(str).tolist()
 
-            # Inicializa a tabela no Session State apenas uma vez para esta configuração
+            # OTIMIZAÇÃO CRÍTICA DO SESSION STATE: 
+            # Atualiza a tabela editável toda vez que a lista de filtros do gestor for alterada
+            precisa_atualizar = False
             if chave_session_data not in st.session_state:
+                precisa_atualizar = True
+            else:
+                ids_sessao = st.session_state[chave_session_data]['Codigo'].astype(str).tolist()
+                if ids_sessao != ids_atuais:
+                    precisa_atualizar = True
+
+            if precisa_atualizar:
                 df_editor_init = pd.DataFrame({
-                    'Codigo': pivot_hist_exib_top['Codigo'] if 'Codigo' in pivot_hist_exib_top.columns else pivot_hist_exib_top[col_nome_exib],
+                    'Codigo': pivot_hist_exib_top[col_id_sessao],
                     'Nome': pivot_hist_exib_top[col_nome_exib],
                     'Base Historica': pivot_hist_exib_top[col_base_meta],
                     'Base Fmt': pivot_hist_exib_top[col_base_meta].apply(fmt_metrica),
