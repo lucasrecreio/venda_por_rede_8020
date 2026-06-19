@@ -175,31 +175,48 @@ with st.sidebar.expander("Filtragem Avancada por Lotes"):
     input_ean     = st.text_area("Lista de Codigos EAN")
     input_ncm     = st.text_area("Lista de Codigos NCM")
 
+# ==============================================================================
+# LÓGICA DE FILTRAGEM INTELIGENTE
+# ==============================================================================
 df_filtrado = dados_originais.copy()
+df_filtrado_metas = dados_originais.copy() # Base cega para os filtros de data
+
+# 1. Filtros de Data aplicados APENAS ao df_filtrado principal
 if anos_selecionados:
     df_filtrado = df_filtrado[df_filtrado['ANO_EIXO'].isin(anos_selecionados)]
 if meses_selecionados:
     df_filtrado = df_filtrado[df_filtrado['PERIODO_LIMPO'].isin(meses_selecionados)]
-if filial_sel:
-    df_filtrado = df_filtrado[df_filtrado['CODFILIAL'].isin(filial_sel)]
-if rede_sel:
-    df_filtrado = df_filtrado[df_filtrado['REDE'].isin(rede_sel)]
-if marca_sel:
-    df_filtrado = df_filtrado[df_filtrado['MARCA'].isin(marca_sel)]
-if busca_cliente:
-    df_filtrado = df_filtrado[df_filtrado['CLIENTE'].str.contains(busca_cliente, case=False, na=False)]
-if busca_produto:
-    df_filtrado = df_filtrado[df_filtrado['DESCRICAO'].str.contains(busca_produto, case=False, na=False)]
 
-for campo, lista in [
-    ('CODREDE', processar_lista_input(input_codrede)),
-    ('CODCLI',  processar_lista_input(input_codcli)),
-    ('CODPROD', processar_lista_input(input_codprod)),
-    ('EAN',     processar_lista_input(input_ean)),
-    ('NCM',     processar_lista_input(input_ncm)),
-]:
-    if lista and campo in df_filtrado.columns:
-        df_filtrado = df_filtrado[df_filtrado[campo].astype(str).str.split('.').str[0].str.strip().isin(lista)]
+# 2. Função para aplicar os demais filtros em qualquer DataFrame
+def aplicar_filtros_comerciais(df_alvo):
+    res = df_alvo.copy()
+    if filial_sel:
+        res = res[res['CODFILIAL'].isin(filial_sel)]
+    if rede_sel:
+        res = res[res['REDE'].isin(rede_sel)]
+    if marca_sel:
+        res = res[res['MARCA'].isin(marca_sel)]
+    if busca_cliente:
+        res = res[res['CLIENTE'].str.contains(busca_cliente, case=False, na=False)]
+    if busca_produto:
+        res = res[res['DESCRICAO'].str.contains(busca_produto, case=False, na=False)]
+
+    for campo, lista in [
+        ('CODREDE', processar_lista_input(input_codrede)),
+        ('CODCLI',  processar_lista_input(input_codcli)),
+        ('CODPROD', processar_lista_input(input_codprod)),
+        ('EAN',     processar_lista_input(input_ean)),
+        ('NCM',     processar_lista_input(input_ncm)),
+    ]:
+        if lista and campo in res.columns:
+            res = res[res[campo].astype(str).str.split('.').str[0].str.strip().isin(lista)]
+            
+    return res
+
+# 3. Aplicando os filtros comerciais em ambas as bases
+df_filtrado = aplicar_filtros_comerciais(df_filtrado)
+df_filtrado_metas = aplicar_filtros_comerciais(df_filtrado_metas)
+
 
 tab_clientes, tab_produtos, tab_inteligencia, tab_metas = st.tabs([
     "Clientes / Rede",
@@ -299,7 +316,6 @@ with tab_clientes:
                     linha_var[NOME_MES_NUM[mes_num]] = np.nan
             linhas_yoy_vars.append(linha_var)
 
-        # Tratamento seguro caso a lista de variação esteja vazia (ex: apenas 1 ano selecionado)
         if linhas_yoy_vals:
             df_yoy_vals = pd.DataFrame(linhas_yoy_vals).set_index("Ano / Evolucao")
         else:
@@ -461,6 +477,10 @@ with tab_produtos:
     if df_filtrado.empty:
         st.warning("Sem dados para os filtros aplicados.")
     else:
+        op_visao_prod = st.radio("Metrica de Visualizacao Comercial (Aba Produtos)", ["Faturamento (R$)", "Volume (Caixas)"], horizontal=True, key="op_visao_prod")
+        col_analise_prod = 'TVENDA' if op_visao_prod == "Faturamento (R$)" else 'QT'
+        fmt_visao_prod = fmt_brl if op_visao_prod == "Faturamento (R$)" else fmt_inteiro
+
         st.write("### Performance de Linhas de Produtos e Marcas")
         agg_cols = {'QT': 'sum', 'TVENDA': 'sum'}
         grp_cols = ['CODPROD', 'DESCRICAO']
@@ -473,11 +493,11 @@ with tab_produtos:
         df_prod = (
             df_filtrado.groupby(grp_cols)
             .agg(agg_cols)
-            .sort_values('TVENDA', ascending=False)
+            .sort_values(col_analise_prod, ascending=False)
             .reset_index()
         )
-        df_prod['Acumulado'] = df_prod['TVENDA'].cumsum()
-        soma_p = df_prod['TVENDA'].sum()
+        df_prod['Acumulado'] = df_prod[col_analise_prod].cumsum()
+        soma_p = df_prod[col_analise_prod].sum()
         df_prod['Pct Acumulado'] = (df_prod['Acumulado'] / soma_p * 100) if soma_p > 0 else 0
         df_prod['Curva ABC'] = df_prod['Pct Acumulado'].apply(
             lambda x: 'A' if x <= 80 else ('B' if x <= 95 else 'C')
@@ -515,14 +535,14 @@ with tab_produtos:
         df_var_marca_export = pd.DataFrame()
 
         if 'MARCA' in df_filtrado.columns:
-            st.write("### Participacao de Faturamento por Marca (Top 10)")
+            st.write(f"### Participacao de {op_visao_prod.split(' ')[0]} por Marca (Top 10)")
             colunas_meses_prod = sorted(df_filtrado['PERIODO_LIMPO'].unique(), key=delete_chave_cronologica)
             top10_marcas = (
-                df_filtrado.groupby('MARCA')['TVENDA'].sum().sort_values(ascending=False).head(10).index.tolist()
+                df_filtrado.groupby('MARCA')[col_analise_prod].sum().sort_values(ascending=False).head(10).index.tolist()
             )
             df_evo_marca = (
                 df_filtrado[df_filtrado['MARCA'].isin(top10_marcas)]
-                .pivot_table(index='MARCA', columns='PERIODO_LIMPO', values='TVENDA', aggfunc='sum')
+                .pivot_table(index='MARCA', columns='PERIODO_LIMPO', values=col_analise_prod, aggfunc='sum')
                 .reindex(columns=colunas_meses_prod, fill_value=0)
             )
 
@@ -530,7 +550,7 @@ with tab_produtos:
             df_evo_hm = df_evo_marca.sort_values('Total', ascending=True).drop(columns=['Total'])
 
             z_data = df_evo_hm.values
-            text_data = [[abrev_brl(val) for val in row] for row in z_data]
+            text_data = [[abrev_brl(val) if col_analise_prod == 'TVENDA' else f"{val/1000:.1f}K".replace('.', ',') if val >= 1000 else f"{val:.0f}" for val in row] for row in z_data]
 
             fig_hm = go.Figure(data=go.Heatmap(
                 z=z_data,
@@ -540,7 +560,7 @@ with tab_produtos:
                 texttemplate="%{text}",
                 colorscale='Blues',
                 showscale=False,
-                hovertemplate='<b>%{y}</b><br>%{x}<br>R$ %{z:,.2f}<extra></extra>'
+                hovertemplate='<b>%{y}</b><br>%{x}<br>' + ('R$ %{z:,.2f}' if col_analise_prod == 'TVENDA' else '%{z:,.0f} Caixas') + '<extra></extra>'
             ))
             layout_hm = base_layout(450)
             layout_hm['xaxis'].update(showgrid=False, zeroline=False)
@@ -568,7 +588,7 @@ with tab_produtos:
                 else:
                     df_var_marca['Var. YoY'] = np.nan
 
-                cols_fmt_m = {c: fmt_brl for c in ultimos_6m_prod}
+                cols_fmt_m = {c: (fmt_brl if col_analise_prod == 'TVENDA' else fmt_inteiro) for c in ultimos_6m_prod}
                 cols_fmt_m['Var. vs Media 6M'] = fmt_var
                 cols_fmt_m['Var. YoY'] = fmt_var
 
@@ -578,7 +598,7 @@ with tab_produtos:
 
                 df_var_marca_export = df_var_marca.copy()
                 for c in ultimos_6m_prod:
-                    df_var_marca_export[c] = df_var_marca_export[c].apply(fmt_brl)
+                    df_var_marca_export[c] = df_var_marca_export[c].apply(fmt_brl if col_analise_prod == 'TVENDA' else fmt_inteiro)
                 df_var_marca_export['Var. vs Media 6M'] = df_var_marca_export['Var. vs Media 6M'].apply(fmt_var)
                 df_var_marca_export['Var. YoY'] = df_var_marca_export['Var. YoY'].apply(fmt_var)
 
@@ -602,16 +622,20 @@ with tab_inteligencia:
     if df_filtrado.empty:
         st.warning("Sem dados para os filtros aplicados.")
     else:
+        op_visao_intel = st.radio("Metrica de Visualizacao Comercial (Aba Inteligencia)", ["Faturamento (R$)", "Volume (Caixas)"], horizontal=True, key="op_visao_intel")
+        col_analise_intel = 'TVENDA' if op_visao_intel == "Faturamento (R$)" else 'QT'
+        fmt_visao_intel = fmt_brl if op_visao_intel == "Faturamento (R$)" else fmt_inteiro
+
         colunas_meses_ib = sorted(df_filtrado['PERIODO_LIMPO'].unique(), key=delete_chave_cronologica)
 
-        st.write("### Evolucao de Faturamento Mensal")
+        st.write(f"### Evolucao de {op_visao_intel} Mensal")
         serie_fat = (
-            df_filtrado.groupby('PERIODO_LIMPO')['TVENDA']
+            df_filtrado.groupby('PERIODO_LIMPO')[col_analise_intel]
             .sum()
             .reindex(colunas_meses_ib)
             .fillna(0)
         )
-        fat_fmt_list = [fmt_brl(v) for v in serie_fat.values]
+        fat_fmt_list = [fmt_visao_intel(v) for v in serie_fat.values]
         fig_fat = go.Figure(go.Scatter(
             x=serie_fat.index.tolist(),
             y=serie_fat.values,
@@ -620,11 +644,14 @@ with tab_inteligencia:
             marker=dict(size=7, color='#60a5fa'),
             fill='tozeroy',
             fillcolor='rgba(59,130,246,0.10)',
-            hovertemplate='<b>%{x}</b><br>Faturamento: %{customdata}<extra></extra>',
+            hovertemplate='<b>%{x}</b><br>' + f'{op_visao_intel.split(" ")[0]}: %{{customdata}}<extra></extra>',
             customdata=fat_fmt_list,
         ))
         layout_fat = base_layout(360)
-        layout_fat['yaxis'] = dict(gridcolor=PLOT_GRID, tickformat=',', tickprefix='R$ ')
+        if col_analise_intel == 'TVENDA':
+            layout_fat['yaxis'] = dict(gridcolor=PLOT_GRID, tickformat=',', tickprefix='R$ ')
+        else:
+            layout_fat['yaxis'] = dict(gridcolor=PLOT_GRID, tickformat=',')
         fig_fat.update_layout(**layout_fat)
         st.plotly_chart(fig_fat, use_container_width=True)
 
@@ -636,7 +663,13 @@ with tab_inteligencia:
                 .reindex(colunas_meses_ib)
                 .fillna(0)
             )
-            serie_margem = (serie_luc_m / serie_fat * 100).fillna(0)
+            serie_fat_para_margem = (
+                df_filtrado.groupby('PERIODO_LIMPO')['TVENDA']
+                .sum()
+                .reindex(colunas_meses_ib)
+                .fillna(0)
+            )
+            serie_margem = (serie_luc_m / serie_fat_para_margem * 100).fillna(0)
             marg_fmt_list = [fmt_pct(v) for v in serie_margem.values]
             fig_marg = go.Figure(go.Scatter(
                 x=serie_margem.index.tolist(),
@@ -693,35 +726,37 @@ with tab_inteligencia:
 
         st.markdown("---")
 
-        st.write("### Top 10 Clientes por Faturamento")
+        st.write(f"### Top 10 Clientes por {op_visao_intel.split(' ')[0]}")
         top10_cli = (
-            df_filtrado.groupby(['CODCLI', 'CLIENTE'])['TVENDA']
+            df_filtrado.groupby(['CODCLI', 'CLIENTE'])[col_analise_intel]
             .sum()
             .sort_values(ascending=False)
             .head(10)
             .reset_index()
         )
-        top10_cli.columns = ['Codigo', 'Cliente', 'Faturamento']
-        top10_cli['Faturamento R$'] = top10_cli['Faturamento'].apply(fmt_brl)
-        soma_top = top10_cli['Faturamento'].sum()
-        top10_cli['% do Total'] = top10_cli['Faturamento'].apply(
+        lbl_metrica = 'Faturamento' if col_analise_intel == 'TVENDA' else 'Volume'
+        top10_cli.columns = ['Codigo', 'Cliente', lbl_metrica]
+        lbl_fmt = 'Faturamento R$' if col_analise_intel == 'TVENDA' else 'Volume (Caixas)'
+        top10_cli[lbl_fmt] = top10_cli[lbl_metrica].apply(fmt_visao_intel)
+        soma_top = top10_cli[lbl_metrica].sum()
+        top10_cli['% do Total'] = top10_cli[lbl_metrica].apply(
             lambda x: fmt_pct(x / soma_top * 100) if soma_top > 0 else '0.00%'
         )
         st.dataframe(
-            top10_cli[['Codigo', 'Cliente', 'Faturamento R$', '% do Total']],
+            top10_cli[['Codigo', 'Cliente', lbl_fmt, '% do Total']],
             use_container_width=True,
             hide_index=True
         )
-        top10_plot = top10_cli.sort_values('Faturamento', ascending=True)
+        top10_plot = top10_cli.sort_values(lbl_metrica, ascending=True)
         fig_top10 = go.Figure(go.Bar(
-            x=top10_plot['Faturamento'],
+            x=top10_plot[lbl_metrica],
             y=top10_plot['Cliente'],
             orientation='h',
             marker_color='#6366f1',
-            text=top10_plot['Faturamento R$'],
+            text=top10_plot[lbl_fmt],
             textposition='outside',
-            hovertemplate='<b>%{y}</b><br>Faturamento: %{customdata}<extra></extra>',
-            customdata=top10_plot['Faturamento R$'],
+            hovertemplate='<b>%{y}</b><br>' + f'{lbl_metrica}: %{{customdata}}<extra></extra>',
+            customdata=top10_plot[lbl_fmt],
         ))
         layout_top10 = base_layout(400)
         layout_top10['xaxis'] = dict(gridcolor=PLOT_GRID, showticklabels=False, tickvals=[])
@@ -732,7 +767,7 @@ with tab_inteligencia:
 
         st.markdown("---")
 
-        st.write("### Risco de Churn - Clientes que nao compraram no ultimo mes")
+        st.write(f"### Risco de Churn - Clientes que nao compraram no ultimo mes (com base em {op_visao_intel.split(' ')[0]})")
         df_churn  = pd.DataFrame()
         ausentes  = set()
         penultimo = None
@@ -748,14 +783,14 @@ with tab_inteligencia:
                         (df_filtrado['CODCLI'].isin(ausentes)) &
                         (df_filtrado['PERIODO_LIMPO'] == penultimo)
                     ]
-                    .groupby(['CODCLI', 'CLIENTE'])['TVENDA']
+                    .groupby(['CODCLI', 'CLIENTE'])[col_analise_intel]
                     .sum()
                     .sort_values(ascending=False)
                     .reset_index()
                 )
-                col_fat = 'Fat. em ' + penultimo
+                col_fat = ('Fat. em ' if col_analise_intel == 'TVENDA' else 'Vol. em ') + penultimo
                 df_churn.columns = ['Codigo', 'Cliente', col_fat]
-                df_churn[col_fat] = df_churn[col_fat].apply(fmt_brl)
+                df_churn[col_fat] = df_churn[col_fat].apply(fmt_visao_intel)
                 st.dataframe(df_churn, use_container_width=True, hide_index=True)
                 st.caption(
                     str(len(ausentes)) + " clientes compraram em " +
@@ -806,10 +841,14 @@ with tab_inteligencia:
         st.write("### Exportar Analise Completa")
         buf_intel = io.BytesIO()
         with pd.ExcelWriter(buf_intel, engine='xlsxwriter') as w:
-            pd.DataFrame({"Periodo": colunas_meses_ib, "Faturamento": serie_fat.values}).to_excel(
+            col_excel_lbl = 'Faturamento' if col_analise_intel == 'TVENDA' else 'Volume'
+            pd.DataFrame({"Periodo": colunas_meses_ib, col_excel_lbl: serie_fat.values}).to_excel(
                 w, index=False, sheet_name="Evolucao Mensal"
             )
-            top10_cli.to_excel(w, index=False, sheet_name="Top 10 Clientes")
+            
+            df_top10_excel = top10_cli.copy()
+            df_top10_excel.to_excel(w, index=False, sheet_name="Top 10 Clientes")
+            
             if not df_churn.empty:
                 df_churn.to_excel(w, index=False, sheet_name="Risco Churn")
             df_ticket.to_excel(w, index=False, sheet_name="Ticket por Rede")
@@ -825,8 +864,8 @@ with tab_inteligencia:
 # ABA 4 - SIMULADOR DE METAS
 # ---------------------------------------------------------------
 with tab_metas:
-    if dados_originais.empty:
-        st.warning("Sem dados carregados para simular metas.")
+    if df_filtrado_metas.empty:
+        st.warning("Sem dados para simular metas com os filtros aplicados (verifique se os filtros de cliente/produto nao excluiram tudo).")
     else:
         st.write("## Simulador de Metas Comerciais")
         st.caption(
@@ -835,7 +874,7 @@ with tab_metas:
             "ao historico de cada um."
         )
 
-        df_metas_base = dados_originais.copy()
+        df_metas_base = df_filtrado_metas.copy()
 
         # =========================================================
         # 1. DETERMINAR MES VIGENTE E PERIODOS DISPONIVEIS
