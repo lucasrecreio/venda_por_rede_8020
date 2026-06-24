@@ -165,7 +165,7 @@ def carregar_base():
     
     for col in ['QT', 'TVENDA', 'TLUCRO']:
         if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype('float64')
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype('float32')
     return df
 
 # ==============================================================================
